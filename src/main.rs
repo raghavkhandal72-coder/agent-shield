@@ -5,6 +5,8 @@ mod proxy;
 mod sandbox;
 mod scan;
 mod scanner;
+mod taint;
+mod ui;
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -157,24 +159,49 @@ enum Commands {
         #[arg(short, long, default_value = "shield.lock")]
         out: PathBuf,
     },
+
+    /// Launch interactive Burp-style live TUI dashboard (traffic, taint radar & token burn)
+    Ui {
+        /// Optional custom path to audit.jsonl (defaults to ~/.agent-shield/audit.jsonl)
+        #[arg(short, long)]
+        audit_file: Option<PathBuf>,
+    },
 }
 
-pub fn write_audit_event(direction: &str, action: &str, detail: &str) {
+pub fn write_rich_audit_event(
+    server: &str,
+    tool: &str,
+    direction: &str,
+    action: &str,
+    detail: &str,
+    payload: &str,
+) {
     let Some(home) = policy::home_dir() else { return };
     let dir = home.join(".agent-shield");
     let _ = fs::create_dir_all(&dir);
     let log_path = dir.join("audit.jsonl");
 
+    let tokens_est = (payload.len() / 4).max(1);
+    let preview: String = payload.chars().take(4096).collect();
+
     let entry = json!({
         "ts": Utc::now().to_rfc3339(),
+        "server": server,
+        "tool": tool,
         "direction": direction,
         "action": action,
         "detail": detail,
+        "tokens_est": tokens_est,
+        "payload": preview,
     });
 
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(log_path) {
         let _ = writeln!(file, "{}", entry);
     }
+}
+
+pub fn write_audit_event(direction: &str, action: &str, detail: &str) {
+    write_rich_audit_event("system", "-", direction, action, detail, "");
 }
 
 #[tokio::main]
@@ -334,6 +361,10 @@ async fn main() -> Result<()> {
 
         Commands::Lock { client, file, out } => {
             scan::run_lock_command(client, file, out).await?;
+        }
+
+        Commands::Ui { audit_file } => {
+            ui::run_tui(audit_file)?;
         }
     }
 
