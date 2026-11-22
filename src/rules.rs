@@ -1,219 +1,250 @@
-use anyhow::{Context, Result};
-use globset::{Glob, GlobMatcher};
+use anyhow::{bail, Context, Result};
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleAction {
     Block,
     Warn,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TestCase {
-    pub tool: String,
-    pub args: Value,
+impl Default for RuleAction {
+    fn default() -> Self {
+        Self::Block
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuleTests {
-    #[serde(default)]
-    pub should_block: Vec<TestCase>,
-    #[serde(default)]
-    pub should_allow: Vec<TestCase>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RuleSeverity {
+    Critical,
+    High,
+    Medium,
+    Low,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MatchClause {
-    #[serde(default)]
-    pub tools: Vec<String>,
-    #[serde(default)]
-    pub arg_regex: Vec<String>,
+impl Default for RuleSeverity {
+    fn default() -> Self {
+        Self::Medium
+    }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuleYaml {
+#[derive(Debug, Clone, Deserialize)]
+pub struct RulePack {
     pub id: String,
     pub name: String,
-    #[serde(default = "default_severity")]
-    pub severity: String,
-    #[serde(default = "default_action")]
+    #[serde(default)]
+    pub severity: RuleSeverity,
+    #[serde(default)]
     pub action: RuleAction,
     #[serde(default)]
     #[allow(dead_code)]
     pub description: String,
     #[serde(rename = "match")]
-    pub match_rule: MatchClause,
+    pub matcher: RuleMatch,
     #[serde(default)]
-    pub tests: Option<RuleTests>,
+    pub tests: RuleTests,
 }
 
-fn default_severity() -> String {
-    "medium".to_string()
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RuleMatch {
+    /// Tool name globs (e.g. ["*sql*", "*postgres*"]). Empty = matches all tools.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    /// Regex patterns checked against every string inside `params.arguments`.
+    #[serde(default)]
+    pub arg_regex: Vec<String>,
 }
 
-fn default_action() -> RuleAction {
-    RuleAction::Block
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct RuleTests {
+    #[serde(default)]
+    pub should_block: Vec<RuleTestCase>,
+    #[serde(default)]
+    pub should_allow: Vec<RuleTestCase>,
 }
 
-#[derive(Clone)]
-pub struct CompiledRule {
-    pub id: String,
-    pub name: String,
-    pub severity: String,
-    pub action: RuleAction,
-    #[allow(dead_code)]
-    pub description: String,
-    pub tool_matchers: Vec<GlobMatcher>,
-    pub arg_regexes: Vec<Regex>,
-    pub tests: Option<RuleTests>,
-    pub source_file: String,
+#[derive(Debug, Clone, Deserialize)]
+pub struct RuleTestCase {
+    pub tool: String,
+    #[serde(default)]
+    pub args: Value,
 }
 
-#[derive(Debug, Clone)]
-pub enum RuleVerdict {
-    Block {
-        rule_id: String,
-        name: String,
-        severity: String,
-        matched: String,
-    },
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleDecision {
+    Allow,
     Warn {
         rule_id: String,
-        name: String,
-        severity: String,
-        matched: String,
+        rule_name: String,
+        severity: RuleSeverity,
+    },
+    Block {
+        rule_id: String,
+        rule_name: String,
+        severity: RuleSeverity,
     },
 }
 
-#[derive(Clone, Default)]
+struct CompiledRule {
+    id: String,
+    name: String,
+    severity: RuleSeverity,
+    action: RuleAction,
+    tool_globs: Option<GlobSet>,
+    arg_regexes: Vec<Regex>,
+}
+
 pub struct RuleEngine {
-    pub rules: Vec<CompiledRule>,
+    rules: Vec<CompiledRule>,
 }
 
 impl RuleEngine {
-    pub fn new() -> Self {
+    pub fn empty() -> Self {
         Self { rules: Vec::new() }
     }
 
-    pub fn load_dir(dir: &Path) -> Result<Self> {
-        let mut engine = Self::new();
-        if !dir.exists() || !dir.is_dir() {
-            return Ok(engine);
+    pub fn len(&self) -> usize {
+        self.rules.len()
+    }
+
+    pub fn load_pack_file(path: &Path) -> Result<RulePack> {
+        let raw = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read rule file: {}", path.display()))?;
+        let pack: RulePack = serde_yaml::from_str(&raw)
+            .with_context(|| format!("Invalid YAML in {}", path.display()))?;
+        Ok(pack)
+    }
+
+    pub fn list_yaml_files(dir: &Path) -> Result<Vec<PathBuf>> {
+        if !dir.exists() {
+            bail!("Rules directory does not exist: {}", dir.display());
         }
-
-        let entries = fs::read_dir(dir)
-            .with_context(|| format!("Failed to read rules directory: {}", dir.display()))?;
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file() {
-                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-                if ext == "yaml" || ext == "yml" {
-                    let content = fs::read_to_string(&path)
-                        .with_context(|| format!("Failed to read rule file: {}", path.display()))?;
-                    let rule_yaml: RuleYaml = serde_yaml::from_str(&content)
-                        .with_context(|| format!("Failed to parse YAML rule: {}", path.display()))?;
-                    let compiled = engine.compile_rule(
-                        rule_yaml,
-                        path.file_name().and_then(|s| s.to_str()).unwrap_or("rule.yaml"),
-                    )?;
-                    engine.rules.push(compiled);
-                }
+        let mut files = Vec::new();
+        for entry in fs::read_dir(dir)? {
+            let path = entry?.path();
+            let is_yaml = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml"))
+                .unwrap_or(false);
+            if path.is_file() && is_yaml {
+                files.push(path);
             }
         }
-
-        Ok(engine)
+        files.sort();
+        Ok(files)
     }
 
-    fn compile_rule(&self, raw: RuleYaml, source_file: &str) -> Result<CompiledRule> {
-        let mut tool_matchers = Vec::new();
-        for pat in &raw.match_rule.tools {
-            let glob = Glob::new(pat)
-                .with_context(|| format!("Invalid tool glob '{}' in rule {}", pat, raw.id))?;
-            tool_matchers.push(glob.compile_matcher());
+    pub fn load_dir(dir: &Path) -> Result<Self> {
+        let files = Self::list_yaml_files(dir)?;
+        let mut packs = Vec::with_capacity(files.len());
+        for path in files {
+            packs.push(Self::load_pack_file(&path)?);
         }
-
-        let mut arg_regexes = Vec::new();
-        for reg in &raw.match_rule.arg_regex {
-            let re = Regex::new(reg)
-                .with_context(|| format!("Invalid regex '{}' in rule {}", reg, raw.id))?;
-            arg_regexes.push(re);
-        }
-
-        Ok(CompiledRule {
-            id: raw.id,
-            name: raw.name,
-            severity: raw.severity,
-            action: raw.action,
-            description: raw.description,
-            tool_matchers,
-            arg_regexes,
-            tests: raw.tests,
-            source_file: source_file.to_string(),
-        })
+        Self::from_packs(packs)
     }
 
-    pub fn evaluate(&self, tool: &str, args: &Value) -> Option<RuleVerdict> {
-        let mut string_args = Vec::new();
-        extract_strings(args, &mut string_args);
+    pub fn from_packs(packs: Vec<RulePack>) -> Result<Self> {
+        let mut compiled = Vec::with_capacity(packs.len());
 
-        for rule in &self.rules {
-            // Check tool name glob match (if empty, matches all tools)
-            let tool_matches = if rule.tool_matchers.is_empty() {
-                true
+        for pack in packs {
+            let tool_globs = if pack.matcher.tools.is_empty() {
+                None
             } else {
-                rule.tool_matchers.iter().any(|m| m.is_match(tool))
+                let mut gb = GlobSetBuilder::new();
+                for pat in &pack.matcher.tools {
+                    let g = GlobBuilder::new(pat)
+                        .case_insensitive(true)
+                        .build()
+                        .with_context(|| format!("Invalid tool glob '{}' in rule '{}'", pat, pack.id))?;
+                    gb.add(g);
+                }
+                Some(gb.build()?)
             };
 
-            if !tool_matches {
-                continue;
+            let mut arg_regexes = Vec::with_capacity(pack.matcher.arg_regex.len());
+            for pat in &pack.matcher.arg_regex {
+                let re = Regex::new(pat)
+                    .with_context(|| format!("Invalid regex '{}' in rule '{}'", pat, pack.id))?;
+                arg_regexes.push(re);
             }
 
-            // Check arg regexes against all string arguments
-            for text in &string_args {
-                for re in &rule.arg_regexes {
-                    if re.is_match(text) {
-                        return match rule.action {
-                            RuleAction::Block => Some(RuleVerdict::Block {
-                                rule_id: rule.id.clone(),
-                                name: rule.name.clone(),
-                                severity: rule.severity.clone(),
-                                matched: text.chars().take(80).collect(),
-                            }),
-                            RuleAction::Warn => Some(RuleVerdict::Warn {
-                                rule_id: rule.id.clone(),
-                                name: rule.name.clone(),
-                                severity: rule.severity.clone(),
-                                matched: text.chars().take(80).collect(),
-                            }),
+            compiled.push(CompiledRule {
+                id: pack.id,
+                name: pack.name,
+                severity: pack.severity,
+                action: pack.action,
+                tool_globs,
+                arg_regexes,
+            });
+        }
+
+        Ok(Self { rules: compiled })
+    }
+
+    pub fn evaluate(&self, tool_name: &str, args: &Value) -> RuleDecision {
+        if self.rules.is_empty() {
+            return RuleDecision::Allow;
+        }
+
+        let mut arg_strings = Vec::new();
+        collect_strings(args, &mut arg_strings);
+
+        let mut pending_warn: Option<RuleDecision> = None;
+
+        for rule in &self.rules {
+            if let Some(globs) = &rule.tool_globs {
+                if !globs.is_match(tool_name) {
+                    continue;
+                }
+            }
+
+            let matched = if rule.arg_regexes.is_empty() {
+                // Rule with tool filter only (no regex) matches any call to that tool
+                rule.tool_globs.is_some()
+            } else {
+                arg_strings
+                    .iter()
+                    .any(|s| rule.arg_regexes.iter().any(|re| re.is_match(s)))
+            };
+
+            if matched {
+                match rule.action {
+                    RuleAction::Block => {
+                        return RuleDecision::Block {
+                            rule_id: rule.id.clone(),
+                            rule_name: rule.name.clone(),
+                            severity: rule.severity,
                         };
+                    }
+                    RuleAction::Warn => {
+                        if pending_warn.is_none() {
+                            pending_warn = Some(RuleDecision::Warn {
+                                rule_id: rule.id.clone(),
+                                rule_name: rule.name.clone(),
+                                severity: rule.severity,
+                            });
+                        }
                     }
                 }
             }
         }
 
-        None
+        pending_warn.unwrap_or(RuleDecision::Allow)
     }
 }
 
-fn extract_strings(v: &Value, out: &mut Vec<String>) {
-    match v {
+fn collect_strings(val: &Value, out: &mut Vec<String>) {
+    match val {
         Value::String(s) => out.push(s.clone()),
-        Value::Array(arr) => {
-            for item in arr {
-                extract_strings(item, out);
-            }
-        }
-        Value::Object(map) => {
-            for val in map.values() {
-                extract_strings(val, out);
-            }
-        }
+        Value::Array(arr) => arr.iter().for_each(|i| collect_strings(i, out)),
+        Value::Object(map) => map.values().for_each(|v| collect_strings(v, out)),
         _ => {}
     }
 }

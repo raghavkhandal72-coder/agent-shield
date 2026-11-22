@@ -1,10 +1,9 @@
 [package]
 name = "agent-shield"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Zero-latency local security firewall for MCP servers & AI agents"
-authors = ["Raghav <raghav@maximaengineering.com>"]
-license = "MIT OR Apache-2.0"
+description = "Local Rust security firewall, OS sandbox, rug-pull lockfile & Burp-style TUI for MCP servers"
+license = "MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

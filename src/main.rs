@@ -13,18 +13,23 @@ mod ui;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use lockfile::ShieldLock;
 use policy::{Decision, Mode, PolicyEngine, ShieldConfig};
+use proxy::ProxyContext;
+use rules::{RuleDecision, RuleEngine};
+use sandbox::SandboxConfig;
 use scanner::ResponseScanner;
 use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+use taint::{TaintConfig, TaintEngine};
 
 #[derive(Parser)]
 #[command(
     name = "agent-shield",
     version,
-    about = "Zero-latency local security firewall for MCP servers & AI agents"
+    about = "Local Rust security firewall, OS sandbox, rug-pull lockfile & TUI for MCP servers"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -35,6 +40,10 @@ struct Cli {
 enum Commands {
     /// Wrap any stdio MCP server behind agent-shield
     Wrap {
+        /// Logical server name shown in TUI & matched against shield.lock
+        #[arg(long, default_value = "mcp", alias = "server-name")]
+        name: String,
+
         /// Path to shield.toml policy file (uses secure defaults if omitted)
         #[arg(short, long)]
         config: Option<PathBuf>,
@@ -47,25 +56,25 @@ enum Commands {
         #[arg(short, long)]
         workspace: Option<PathBuf>,
 
-        /// Logical server name shown in TUI & matched against shield.lock
-        #[arg(long, default_value = "mcp", alias = "server-name")]
-        name: String,
+        /// Directory of community YAML rule packs (e.g. ./rules)
+        #[arg(long)]
+        rules_dir: Option<PathBuf>,
 
         /// Optional shield.lock path to block mid-session tool schema rug-pulls
         #[arg(long)]
         lockfile: Option<PathBuf>,
 
-        /// Optional directory containing community YAML rule packs (defaults to ./rules if present)
-        #[arg(long)]
-        rules_dir: Option<PathBuf>,
-
-        /// Enforce OS-level kernel sandbox (Linux Landlock / macOS Seatbelt / Windows Job Object)
+        /// Enforce OS-native sandbox (Linux Landlock / macOS Seatbelt / Windows Job Object)
         #[arg(long)]
         sandbox: bool,
 
-        /// Fail closed if kernel sandbox cannot be fully enforced
+        /// Fail closed if host OS kernel cannot enforce sandboxing
         #[arg(long)]
         sandbox_strict: bool,
+
+        /// Hard-block outbound comms whenever Private Data + Untrusted Input are both active
+        #[arg(long)]
+        strict_trifecta: bool,
 
         /// Target MCP server command and arguments after `--`
         #[arg(last = true, required = true)]
@@ -78,7 +87,7 @@ enum Commands {
         out: PathBuf,
     },
 
-    /// Dry-run a tool call JSON against your current policy
+    /// Dry-run a tool call JSON against policy + optional YAML rule packs
     Check {
         #[arg(short, long)]
         config: Option<PathBuf>,
@@ -86,7 +95,10 @@ enum Commands {
         #[arg(short, long)]
         workspace: Option<PathBuf>,
 
-        /// MCP tool name (e.g. read_file, run_command)
+        #[arg(long)]
+        rules_dir: Option<PathBuf>,
+
+        /// MCP tool name (e.g. read_file, run_sql_query)
         #[arg(long)]
         tool: String,
 
@@ -103,53 +115,42 @@ enum Commands {
 
     /// Auto-wrap (or unwrap) MCP servers in Claude Desktop or Cursor config
     AutoWrap {
-        /// Target MCP client config to auto-detect
         #[arg(long, value_enum, default_value_t = autowrap::ClientTarget::Claude)]
         client: autowrap::ClientTarget,
 
-        /// Custom path to mcp.json / claude_desktop_config.json
         #[arg(short, long)]
         file: Option<PathBuf>,
 
-        /// Enforcement mode written into wrapped entries
         #[arg(short, long, value_enum, default_value_t = Mode::Enforce)]
         mode: Mode,
 
-        /// Optional shield.toml path to pass to wrapped servers
         #[arg(short, long)]
         config: Option<PathBuf>,
 
-        /// Optional workspace jail directory
         #[arg(short, long)]
         workspace: Option<PathBuf>,
 
-        /// Override agent-shield binary path (defaults to current executable path)
         #[arg(long)]
         bin: Option<String>,
 
-        /// Preview modified JSON without writing to disk
         #[arg(long)]
         dry_run: bool,
 
-        /// Remove agent-shield wrapper and restore original server commands
         #[arg(long)]
         unwrap: bool,
     },
 
-    /// Audit all configured MCP servers for tool poisoning, shadowing, rug-pulls & Lethal Trifecta
+    /// Audit configured MCP servers for tool poisoning, shadowing, rug-pulls & Lethal Trifecta
     Scan {
         #[arg(long, value_enum, default_value_t = autowrap::ClientTarget::Claude)]
         client: autowrap::ClientTarget,
 
-        /// Custom path to MCP config JSON
         #[arg(short, long)]
         file: Option<PathBuf>,
 
-        /// Path to shield.lock for rug-pull verification
         #[arg(long, default_value = "shield.lock")]
         lockfile: PathBuf,
 
-        /// Output machine-readable JSON (useful for CI/CD gates)
         #[arg(long)]
         json: bool,
     },
@@ -166,30 +167,25 @@ enum Commands {
         out: PathBuf,
     },
 
-    /// Launch interactive Burp-style live TUI dashboard (traffic, taint radar & token burn)
-    Ui {
-        /// Optional custom path to audit.jsonl (defaults to ~/.agent-shield/audit.jsonl)
-        #[arg(short, long)]
-        audit_file: Option<PathBuf>,
-    },
-
-    /// Safe policy verification & local MCP boundary QA runner
+    /// Run YAML rule pack self-tests and/or safe MCP server schema & boundary QA
     Fuzz {
-        /// Path to directory containing community YAML rule packs
-        #[arg(long, default_value = "rules")]
-        rules: PathBuf,
+        /// Directory containing community *.yaml rule packs
+        #[arg(short, long)]
+        rules: Option<PathBuf>,
 
-        /// Optional workspace directory for boundary canary tests
+        /// Workspace directory for target server boundary checks
         #[arg(short, long)]
         workspace: Option<PathBuf>,
 
-        /// Optional target MCP server command (e.g. --target "python demo/evil_mcp_server.py")
-        #[arg(long)]
-        target: Option<String>,
-
-        /// Target MCP server command and arguments after `--` for schema resilience & boundary QA
+        /// Optional target MCP server command after `--`
         #[arg(last = true)]
-        cmd: Vec<String>,
+        target: Vec<String>,
+    },
+
+    /// Launch interactive Burp-style live TUI dashboard (traffic, taint radar & token burn)
+    Ui {
+        #[arg(short, long)]
+        audit_file: Option<PathBuf>,
     },
 }
 
@@ -235,79 +231,81 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Wrap {
+            name,
             config,
             mode,
             workspace,
-            name,
-            lockfile,
             rules_dir,
-            sandbox,
+            lockfile,
+            sandbox: use_sandbox,
             sandbox_strict,
+            strict_trifecta,
             target,
         } => {
             if target.is_empty() {
                 bail!("No MCP server command provided after `--`");
             }
+
             let cfg = ShieldConfig::load(config.as_deref())?;
             let policy_engine = PolicyEngine::new(&cfg, mode, workspace.clone())?;
             let response_scanner = ResponseScanner::new(cfg.scanner)?;
 
-            let cmd = &target[0];
-            let args = &target[1..];
-
-            let loaded_lock = lockfile
-                .or_else(|| {
-                    let default_lock = PathBuf::from("shield.lock");
-                    if default_lock.exists() {
-                        Some(default_lock)
+            let rule_engine = match rules_dir.as_deref() {
+                Some(dir) => {
+                    let loaded = RuleEngine::load_dir(dir)?;
+                    eprintln!("[agent-shield] loaded {} YAML rule pack(s) from {}", loaded.len(), dir.display());
+                    loaded
+                }
+                None => {
+                    let default_rules = PathBuf::from("rules");
+                    if default_rules.is_dir() {
+                        RuleEngine::load_dir(&default_rules).unwrap_or_else(|_| RuleEngine::empty())
                     } else {
-                        None
+                        RuleEngine::empty()
                     }
-                })
-                .and_then(|p| lockfile::ShieldLock::load(&p).ok());
-
-            let srv_name = if name == "mcp" {
-                Path::new(cmd)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .map(str::to_string)
-                    .or(Some("mcp".to_string()))
-            } else {
-                Some(name)
+                }
             };
 
-            let sandbox_cfg = if sandbox || sandbox_strict {
-                let ws = workspace.unwrap_or_else(|| PathBuf::from("."));
-                let mut sc = sandbox::SandboxConfig::new(ws);
-                sc.strict = sandbox_strict;
-                Some(sc)
+            let loaded_lock = match lockfile.as_deref() {
+                Some(p) => {
+                    let lock = ShieldLock::load(p)?;
+                    eprintln!("[agent-shield] rug-pull lockfile active: {}", p.display());
+                    Some(lock)
+                }
+                None => None,
+            };
+
+            let sandbox_cfg = if use_sandbox {
+                let ws = match workspace {
+                    Some(w) => w,
+                    None => std::env::current_dir().context("could not resolve current directory for sandbox")?,
+                };
+                let mut sb = SandboxConfig::new(ws);
+                sb.strict = sandbox_strict;
+                Some(sb)
             } else {
                 None
             };
 
-            let rule_engine = rules_dir
-                .or_else(|| {
-                    let d = PathBuf::from("rules");
-                    if d.is_dir() {
-                        Some(d)
-                    } else {
-                        None
-                    }
-                })
-                .and_then(|p| rules::RuleEngine::load_dir(&p).ok());
+            let taint_cfg = TaintConfig {
+                enabled: true,
+                strict_trifecta,
+                ..TaintConfig::default()
+            };
+            let taint_engine = TaintEngine::new(taint_cfg)?;
 
-            eprintln!("[agent-shield] protecting MCP server: {} {:?}", cmd, args);
-            proxy::run_proxy(
-                cmd,
-                args,
-                policy_engine,
-                response_scanner,
-                srv_name,
-                loaded_lock,
-                sandbox_cfg,
-                rule_engine,
-            )
-            .await?;
+            let ctx = ProxyContext {
+                server_name: name,
+                policy: policy_engine,
+                rules: rule_engine,
+                scanner: response_scanner,
+                taint: taint_engine,
+                lockfile: loaded_lock,
+                sandbox: sandbox_cfg,
+            };
+
+            eprintln!("[agent-shield] protecting '{}': {} {:?}", ctx.server_name, target[0], &target[1..]);
+            proxy::run_proxy(&target[0], &target[1..], ctx).await?;
         }
 
         Commands::Init { out } => {
@@ -322,11 +320,24 @@ async fn main() -> Result<()> {
         Commands::Check {
             config,
             workspace,
+            rules_dir,
             tool,
             args,
         } => {
             let cfg = ShieldConfig::load(config.as_deref())?;
             let engine = PolicyEngine::new(&cfg, Some(Mode::Enforce), workspace)?;
+            let rule_engine = match rules_dir.as_deref() {
+                Some(dir) => RuleEngine::load_dir(dir)?,
+                None => {
+                    let default_rules = PathBuf::from("rules");
+                    if default_rules.is_dir() {
+                        RuleEngine::load_dir(&default_rules).unwrap_or_else(|_| RuleEngine::empty())
+                    } else {
+                        RuleEngine::empty()
+                    }
+                }
+            };
+
             let parsed_args: serde_json::Value =
                 serde_json::from_str(&args).context("--args must be valid JSON")?;
 
@@ -334,19 +345,27 @@ async fn main() -> Result<()> {
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "tools/call",
-                "params": {
-                    "name": tool,
-                    "arguments": parsed_args
-                }
+                "params": { "name": tool, "arguments": parsed_args }
             });
 
             match engine.evaluate_tool_call(&mock_frame) {
-                Decision::Allow => println!("ALLOW"),
-                Decision::AuditAlert(r) => println!("AUDIT_ALERT: {}", r),
                 Decision::Block(r) => {
-                    println!("BLOCKED: {}", r);
+                    println!("BLOCKED (policy): {}", r);
                     std::process::exit(2);
                 }
+                Decision::AuditAlert(r) => println!("AUDIT_ALERT (policy): {}", r),
+                Decision::Allow => {}
+            }
+
+            match rule_engine.evaluate(&tool, &parsed_args) {
+                RuleDecision::Block { rule_id, rule_name, .. } => {
+                    println!("BLOCKED (rule {}): {}", rule_id, rule_name);
+                    std::process::exit(2);
+                }
+                RuleDecision::Warn { rule_id, rule_name, .. } => {
+                    println!("WARN (rule {}): {}", rule_id, rule_name);
+                }
+                RuleDecision::Allow => println!("ALLOW"),
             }
         }
 
@@ -404,52 +423,16 @@ async fn main() -> Result<()> {
             scan::run_lock_command(client, file, out).await?;
         }
 
-        Commands::Ui { audit_file } => {
-            ui::run_tui(audit_file)?;
-        }
-
         Commands::Fuzz {
             rules,
             workspace,
             target,
-            cmd,
         } => {
-            let mut all_ok = true;
+            fuzz::run_fuzz(rules, workspace, target).await?;
+        }
 
-            // 1. Rule verification self-tests
-            if rules.exists() {
-                let rules_ok = fuzz::run_rule_tests(&rules)?;
-                if !rules_ok {
-                    all_ok = false;
-                }
-            } else if target.is_none() && cmd.is_empty() {
-                bail!(
-                    "Rules directory '{}' not found. Specify --rules <DIR> or pass a server after `--`",
-                    rules.display()
-                );
-            }
-
-            // 2. Target MCP server schema resilience & boundary QA
-            let target_args: Vec<String> = if !cmd.is_empty() {
-                cmd
-            } else if let Some(t) = target {
-                t.split_whitespace().map(String::from).collect()
-            } else {
-                Vec::new()
-            };
-
-            if !target_args.is_empty() {
-                let c = &target_args[0];
-                let args = &target_args[1..];
-                let server_ok = fuzz::run_server_qa(c, args, workspace.as_deref()).await?;
-                if !server_ok {
-                    all_ok = false;
-                }
-            }
-
-            if !all_ok {
-                std::process::exit(1);
-            }
+        Commands::Ui { audit_file } => {
+            ui::run_tui(audit_file)?;
         }
     }
 

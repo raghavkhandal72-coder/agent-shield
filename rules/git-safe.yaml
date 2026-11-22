@@ -1,28 +1,32 @@
-id: git-no-destructive-ops
-name: Block Force Push & Hard Reset
+id: git-safe-ops
+name: Block Destructive Git Ops & Hook Persistence
 severity: high
 action: block
-description: Prevents AI agents from force-pushing, hard-resetting or wiping git history.
+description: Prevents history-rewriting git commands and malicious git config persistence vectors.
 
 match:
-  tools: ["*git*", "*shell*", "*terminal*", "*cmd*", "*exec*"]
+  tools: ["*git*", "*shell*", "*bash*", "*terminal*", "*exec*", "*cmd*"]
   arg_regex:
-    - "(?i)git\\s+push\\s+.*(--force|-f\\b)"
-    - "(?i)git\\s+reset\\s+--hard\\b"
-    - "(?i)git\\s+clean\\s+(-fdx|-xdf|-fd)\\b"
+    - '(?i)\bgit\s+push\b.*(--force\b|--force-with-lease\b|\s-f(\s|$)|\+HEAD\b|\+main\b|\+master\b)'
+    - '(?i)\bgit\s+reset\s+--hard\b'
+    - '(?i)\bgit\s+clean\s+-[a-z]*f'
+    - '(?i)\bgit\s+branch\s+-D\b'
+    - '(?i)\bgit\s+config\b.*(core\.sshCommand|core\.hooksPath|credential\.helper)'
 
 tests:
   should_block:
     - tool: git_run
       args: { command: "git push origin main --force" }
     - tool: run_shell
-      args: { cmd: "git reset --hard HEAD~1" }
+      args: { cmd: "git push -f origin feature-x" }
     - tool: terminal_exec
-      args: { command: "git clean -fdx" }
+      args: { command: "git reset --hard HEAD~3" }
+    - tool: git_cli
+      args: { command: "git config core.hooksPath /tmp/evil-hooks" }
   should_allow:
     - tool: git_run
-      args: { command: "git status" }
+      args: { command: "git status -sb" }
     - tool: git_run
-      args: { command: "git push origin feature-branch" }
+      args: { command: "git push origin feature/add-tests" }
     - tool: run_shell
-      args: { cmd: "git log --oneline -n 5" }
+      args: { cmd: "git diff main..HEAD" }

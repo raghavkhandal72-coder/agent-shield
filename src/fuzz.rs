@@ -1,271 +1,362 @@
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Instant;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::Command;
+use std::time::Duration;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::process::{ChildStdin, ChildStdout, Command};
+use tokio::time::timeout;
 
-use crate::rules::{RuleAction, RuleEngine};
+use crate::rules::{RuleAction, RuleDecision, RuleEngine};
 
-pub fn run_rule_tests(rules_dir: &Path) -> Result<bool> {
-    println!("\n\x1b[1;36m======================================================================\x1b[0m");
-    println!("\x1b[1;36m  agent-shield fuzz  |  Community YAML Rule Verification\x1b[0m");
-    println!("  Directory: {}", rules_dir.display());
-    println!("\x1b[1;36m======================================================================\x1b[0m\n");
-
-    let engine = RuleEngine::load_dir(rules_dir)
-        .with_context(|| format!("Failed to load rules from {}", rules_dir.display()))?;
-
-    if engine.rules.is_empty() {
-        println!("No YAML rules found in {}", rules_dir.display());
-        return Ok(true);
+pub async fn run_fuzz(
+    rules_dir: Option<PathBuf>,
+    workspace: Option<PathBuf>,
+    target: Vec<String>,
+) -> Result<()> {
+    if rules_dir.is_none() && target.is_empty() {
+        bail!("Provide --rules <dir> and/or a target MCP server command after `--`");
     }
 
-    let mut total_rules = 0;
-    let mut total_tests = 0;
-    let mut passed_tests = 0;
-    let mut failed_tests = 0;
+    let mut passed = 0usize;
+    let mut failed = 0usize;
 
-    for rule in &engine.rules {
-        total_rules += 1;
-        println!("Rule: \x1b[1m{}\x1b[0m ({}) [{}]", rule.id, rule.source_file, rule.severity);
+    println!("=========================================================================");
+    println!("  agent-shield fuzz  |  Policy Self-Test & Local MCP Boundary QA");
+    println!("=========================================================================");
 
-        let Some(tests) = &rule.tests else {
-            println!("  \x1b[33m[SKIP]\x1b[0m No tests defined in rule\n");
-            continue;
-        };
-
-        let single_engine = RuleEngine {
-            rules: vec![rule.clone()],
-        };
-
-        // 1. Test should_block cases
-        for case in &tests.should_block {
-            total_tests += 1;
-            let verdict = single_engine.evaluate(&case.tool, &case.args);
-            let ok = match (rule.action.clone(), verdict) {
-                (RuleAction::Block, Some(crate::rules::RuleVerdict::Block { .. })) => true,
-                (RuleAction::Warn, Some(crate::rules::RuleVerdict::Warn { .. })) => true,
-                _ => false,
-            };
-
-            if ok {
-                passed_tests += 1;
-                println!("  \x1b[32m[PASS]\x1b[0m should_block: {} {:?}", case.tool, case.args);
-            } else {
-                failed_tests += 1;
-                println!(
-                    "  \x1b[1;31m[FAIL]\x1b[0m should_block FAILED to trigger rule: {} {:?}",
-                    case.tool, case.args
-                );
-            }
-        }
-
-        // 2. Test should_allow cases
-        for case in &tests.should_allow {
-            total_tests += 1;
-            let verdict = single_engine.evaluate(&case.tool, &case.args);
-            if verdict.is_none() {
-                passed_tests += 1;
-                println!("  \x1b[32m[PASS]\x1b[0m should_allow: {} {:?}", case.tool, case.args);
-            } else {
-                failed_tests += 1;
-                println!(
-                    "  \x1b[1;31m[FAIL]\x1b[0m should_allow falsely triggered rule: {} {:?}",
-                    case.tool, case.args
-                );
-            }
-        }
-
-        println!();
+    if let Some(dir) = rules_dir.as_deref() {
+        let (p, f) = run_rule_pack_tests(dir)?;
+        passed += p;
+        failed += f;
     }
 
-    println!("----------------------------------------------------------------------");
-    if failed_tests == 0 {
-        println!(
-            "\x1b[1;32mRESULT: ALL PASSED\x1b[0m ({} rules, {} test cases passed, 0 failures)",
-            total_rules, passed_tests
-        );
+    if !target.is_empty() {
+        let (p, f) = run_server_qa(&target, workspace.as_deref()).await?;
+        passed += p;
+        failed += f;
+    }
+
+    println!("-------------------------------------------------------------------------");
+    if failed == 0 {
+        println!("\x1b[32mResult: {} passed, 0 failed\x1b[0m", passed);
+        Ok(())
     } else {
-        println!(
-            "\x1b[1;31mRESULT: FAILED\x1b[0m ({} passed, {} failed out of {} test cases)",
-            passed_tests, failed_tests, total_tests
-        );
+        println!("\x1b[31mResult: {} passed, {} failed\x1b[0m", passed, failed);
+        std::process::exit(2);
     }
-    println!("----------------------------------------------------------------------\n");
-
-    Ok(failed_tests == 0)
 }
 
-pub async fn run_server_qa(
-    cmd: &str,
-    args: &[String],
-    workspace: Option<&Path>,
-) -> Result<bool> {
-    println!("\n\x1b[1;36m======================================================================\x1b[0m");
-    println!("\x1b[1;36m  agent-shield fuzz  |  MCP Schema & Boundary QA Runner\x1b[0m");
-    println!("  Target: {} {:?}", cmd, args);
-    if let Some(ws) = workspace {
-        println!("  Workspace: {}", ws.display());
+/// Runs embedded `should_block` and `should_allow` assertions inside every YAML rule pack.
+fn run_rule_pack_tests(dir: &Path) -> Result<(usize, usize)> {
+    let files = RuleEngine::list_yaml_files(dir)?;
+    if files.is_empty() {
+        bail!("No .yaml/.yml rule packs found in {}", dir.display());
     }
-    println!("\x1b[1;36m======================================================================\x1b[0m\n");
 
-    let mut child = Command::new(cmd)
-        .args(args)
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+
+    for path in files {
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown.yaml");
+
+        let pack = match RuleEngine::load_pack_file(&path) {
+            Ok(p) => p,
+            Err(err) => {
+                println!("\x1b[31m[FAIL]\x1b[0m Rule Pack: {} (parse error: {})", file_name, err);
+                failed += 1;
+                continue;
+            }
+        };
+
+        let expected_action = pack.action;
+        let tests = pack.tests.clone();
+        let total_cases = tests.should_block.len() + tests.should_allow.len();
+
+        let engine = match RuleEngine::from_packs(vec![pack]) {
+            Ok(e) => e,
+            Err(err) => {
+                println!("\x1b[31m[FAIL]\x1b[0m Rule Pack: {} (compile error: {})", file_name, err);
+                failed += 1;
+                continue;
+            }
+        };
+
+        let mut failures = Vec::new();
+
+        for (i, tc) in tests.should_block.iter().enumerate() {
+            let decision = engine.evaluate(&tc.tool, &tc.args);
+            let ok = match expected_action {
+                RuleAction::Block => matches!(decision, RuleDecision::Block { .. }),
+                RuleAction::Warn => !matches!(decision, RuleDecision::Allow),
+            };
+            if !ok {
+                failures.push(format!(
+                    "should_block[{}] tool='{}' unexpectedly allowed",
+                    i, tc.tool
+                ));
+            }
+        }
+
+        for (i, tc) in tests.should_allow.iter().enumerate() {
+            let decision = engine.evaluate(&tc.tool, &tc.args);
+            if !matches!(decision, RuleDecision::Allow) {
+                failures.push(format!(
+                    "should_allow[{}] tool='{}' false positive: {:?}",
+                    i, tc.tool, decision
+                ));
+            }
+        }
+
+        if failures.is_empty() {
+            println!(
+                "\x1b[32m[PASS]\x1b[0m Rule Pack: {:<26} ({}/{} assertions)",
+                file_name, total_cases, total_cases
+            );
+            passed += 1;
+        } else {
+            println!(
+                "\x1b[31m[FAIL]\x1b[0m Rule Pack: {:<26} ({} failure(s))",
+                file_name,
+                failures.len()
+            );
+            for msg in failures {
+                println!("       -> {}", msg);
+            }
+            failed += 1;
+        }
+    }
+
+    Ok((passed, failed))
+}
+
+/// Spawns a local stdio MCP server and runs benign schema resilience + boundary canary checks.
+async fn run_server_qa(target: &[String], workspace: Option<&Path>) -> Result<(usize, usize)> {
+    let mut cmd = Command::new(&target[0]);
+    cmd.args(&target[1..])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+
+    if let Some(ws) = workspace {
+        cmd.current_dir(ws);
+    }
+
+    let mut child = cmd
         .spawn()
-        .with_context(|| format!("Failed to spawn target server: {}", cmd))?;
+        .with_context(|| format!("Failed to spawn target MCP server '{}'", target[0]))?;
 
-    let mut child_in = child.stdin.take().expect("failed child stdin");
-    let mut child_out = BufReader::new(child.stdout.take().expect("failed child stdout")).lines();
+    let mut stdin = child.stdin.take().context("missing child stdin")?;
+    let stdout = child.stdout.take().context("missing child stdout")?;
+    let mut lines = BufReader::new(stdout).lines();
 
-    let mut req_id = 0;
+    let mut passed = 0usize;
+    let mut failed = 0usize;
 
-    let mut send_rpc = |method: &str, params: Value| {
-        req_id += 1;
-        let id = req_id;
-        let frame = json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": method,
-            "params": params,
-        });
-        format!("{}\n", frame)
-    };
-
-    // 1. Handshake: initialize
-    println!("[1/4] Probing server handshake (initialize) ...");
-    let t0 = Instant::now();
-    child_in
-        .write_all(
-            send_rpc(
-                "initialize",
-                json!({
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": { "name": "agent-shield-fuzz", "version": "0.1.0" }
-                }),
-            )
-            .as_bytes(),
+    let outcome: Result<()> = async {
+        // 1. Handshake + tools/list
+        let _ = rpc_call(
+            &mut stdin,
+            &mut lines,
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "agent-shield-fuzz", "version": "0.2.0" }
+            }),
         )
-        .await?;
-    child_in.flush().await?;
+        .await
+        .context("initialize handshake failed")?;
 
-    let init_resp = match child_out.next_line().await? {
-        Some(line) => line,
-        None => bail!("Target MCP server exited prematurely during initialize"),
-    };
-    let init_val: Value = serde_json::from_str(&init_resp).unwrap_or(json!({}));
-    let srv_name = init_val
-        .get("result")
-        .and_then(|r| r.get("serverInfo"))
-        .and_then(|s| s.get("name"))
-        .and_then(|n| n.as_str())
-        .unwrap_or("unknown");
-    println!("  \x1b[32m[OK]\x1b[0m Connected to '{}' in {:.1}ms", srv_name, t0.elapsed().as_secs_f64() * 1000.0);
+        let notif = json!({ "jsonrpc": "2.0", "method": "notifications/initialized" });
+        stdin.write_all(format!("{}\n", notif).as_bytes()).await?;
+        stdin.flush().await?;
 
-    // 2. Fetch tools
-    println!("[2/4] Querying available tools (tools/list) ...");
-    child_in.write_all(send_rpc("tools/list", json!({})).as_bytes()).await?;
-    child_in.flush().await?;
+        let list_resp = rpc_call(&mut stdin, &mut lines, 2, "tools/list", json!({}))
+            .await
+            .context("tools/list failed")?;
+        let tools = list_resp
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .and_then(|t| t.as_array())
+            .cloned()
+            .unwrap_or_default();
 
-    let tools_resp = match child_out.next_line().await? {
-        Some(line) => line,
-        None => bail!("Target MCP server closed stdout during tools/list"),
-    };
-    let tools_val: Value = serde_json::from_str(&tools_resp).unwrap_or(json!({}));
-    let tools = tools_val
-        .get("result")
-        .and_then(|r| r.get("tools"))
-        .and_then(|t| t.as_array())
-        .cloned()
-        .unwrap_or_default();
+        if tools.is_empty() {
+            println!("\x1b[33m[WARN]\x1b[0m Target exposed 0 tools; skipping per-tool QA checks");
+            return Ok(());
+        }
 
-    println!("  \x1b[32m[OK]\x1b[0m Discovered {} tool(s)", tools.len());
+        let sample_tool = tools[0]
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
 
-    // 3. Fuzz each tool with safe boundary cases
-    println!("[3/4] Fuzzing tools with safe resilience & boundary cases ...");
-    let mut total_fuzz_cases = 0;
-    let mut survived_cases = 0;
-
-    for tool in &tools {
-        let name = tool.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
-        print!("  Tool '{}': ", name);
-
-        let test_cases = vec![
-            ("empty_args", json!({})),
-            ("null_args", json!({ "path": null, "query": null, "cmd": null })),
-            ("wrong_types", json!({ "path": 12345, "query": true, "cmd": [1, 2] })),
-            (
-                "oversized_string",
-                json!({ "input": "A".repeat(16384), "query": "B".repeat(16384) }),
-            ),
-            (
-                "boundary_canary",
-                json!({
-                    "path": "../agent_shield_canary.txt",
-                    "file": "../../agent_shield_canary.txt",
-                    "file_path": "../../../agent_shield_canary.txt"
-                }),
-            ),
-        ];
-
-        let mut tool_ok = true;
-        for (_label, test_args) in test_cases {
-            total_fuzz_cases += 1;
-            let call_frame = send_rpc("tools/call", json!({ "name": name, "arguments": test_args }));
-            if child_in.write_all(call_frame.as_bytes()).await.is_err() {
-                tool_ok = false;
-                break;
+        // 2. Malformed / null arguments resilience
+        match rpc_call(
+            &mut stdin,
+            &mut lines,
+            3,
+            "tools/call",
+            json!({ "name": sample_tool, "arguments": Value::Null }),
+        )
+        .await
+        {
+            Ok(_) => {
+                println!(
+                    "\x1b[32m[PASS]\x1b[0m Schema QA: '{}' handled null/malformed args without crashing",
+                    sample_tool
+                );
+                passed += 1;
             }
-            if child_in.flush().await.is_err() {
-                tool_ok = false;
-                break;
+            Err(e) => {
+                println!(
+                    "\x1b[31m[FAIL]\x1b[0m Schema QA: '{}' crashed or timed out on null args ({})",
+                    sample_tool, e
+                );
+                failed += 1;
+                return Ok(());
             }
+        }
 
-            match child_out.next_line().await {
-                Ok(Some(line)) => {
-                    if serde_json::from_str::<Value>(&line).is_ok() {
-                        survived_cases += 1;
+        // 3. Oversized payload (64KB benign ASCII) resilience
+        let big_str = "A".repeat(65_536);
+        match rpc_call(
+            &mut stdin,
+            &mut lines,
+            4,
+            "tools/call",
+            json!({ "name": sample_tool, "arguments": { "input": big_str } }),
+        )
+        .await
+        {
+            Ok(_) => {
+                println!(
+                    "\x1b[32m[PASS]\x1b[0m Schema QA: '{}' survived 64KB payload gracefully",
+                    sample_tool
+                );
+                passed += 1;
+            }
+            Err(e) => {
+                println!(
+                    "\x1b[31m[FAIL]\x1b[0m Schema QA: '{}' crashed or hung on 64KB payload ({})",
+                    sample_tool, e
+                );
+                failed += 1;
+                return Ok(());
+            }
+        }
+
+        // 4. Non-destructive workspace boundary canary check (read-only file tools only)
+        if let Some((read_tool, path_key)) = find_read_file_tool(&tools) {
+            let canary = "../agent_shield_canary_nonexistent.txt";
+            let mut args_map = serde_json::Map::new();
+            args_map.insert(path_key.clone(), Value::String(canary.into()));
+
+            match rpc_call(
+                &mut stdin,
+                &mut lines,
+                5,
+                "tools/call",
+                json!({ "name": read_tool, "arguments": Value::Object(args_map) }),
+            )
+            .await
+            {
+                Ok(resp) => {
+                    let rejected = resp.get("error").is_some()
+                        || resp
+                            .get("result")
+                            .and_then(|r| r.get("isError"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+
+                    if rejected {
+                        println!(
+                            "\x1b[32m[PASS]\x1b[0m Boundary : '{}' rejected out-of-workspace canary path",
+                            read_tool
+                        );
+                        passed += 1;
                     } else {
-                        tool_ok = false;
+                        println!(
+                            "\x1b[31m[FAIL]\x1b[0m Boundary : '{}' accepted out-of-workspace canary path without error",
+                            read_tool
+                        );
+                        failed += 1;
                     }
                 }
-                _ => {
-                    tool_ok = false;
-                    break;
+                Err(e) => {
+                    println!("\x1b[31m[FAIL]\x1b[0m Boundary : canary probe failed ({})", e);
+                    failed += 1;
                 }
             }
         }
 
-        if tool_ok {
-            println!("\x1b[32mPASS\x1b[0m (5/5 cases handled gracefully)");
-        } else {
-            println!("\x1b[31mCRASH/HANG\x1b[0m");
-        }
+        Ok(())
     }
-
-    println!("[4/4] Summary verdict ...");
-    let all_passed = total_fuzz_cases > 0 && total_fuzz_cases == survived_cases;
-    println!("----------------------------------------------------------------------");
-    if all_passed {
-        println!(
-            "\x1b[1;32mSCHEMA RESILIENCE: 100%\x1b[0m ({} cases tested, 0 server crashes)",
-            total_fuzz_cases
-        );
-    } else {
-        println!(
-            "\x1b[1;33mSCHEMA RESILIENCE: {}%\x1b[0m ({}/{} cases handled cleanly)",
-            (survived_cases * 100) / total_fuzz_cases.max(1),
-            survived_cases,
-            total_fuzz_cases
-        );
-    }
-    println!("----------------------------------------------------------------------\n");
+    .await;
 
     let _ = child.kill().await;
-    Ok(all_passed)
+    outcome?;
+    Ok((passed, failed))
+}
+
+fn find_read_file_tool(tools: &[Value]) -> Option<(String, String)> {
+    for tool in tools {
+        let name = tool.get("name").and_then(|v| v.as_str())?;
+        let lower = name.to_ascii_lowercase();
+        if lower.contains("read_file") || lower.contains("get_file") {
+            let key = tool
+                .get("inputSchema")
+                .and_then(|s| s.get("properties"))
+                .and_then(|p| p.as_object())
+                .and_then(|props| {
+                    ["path", "file_path", "filepath", "file", "filename"]
+                        .iter()
+                        .find(|&&k| props.contains_key(k))
+                        .map(|&k| k.to_string())
+                })
+                .unwrap_or_else(|| "path".to_string());
+            return Some((name.to_string(), key));
+        }
+    }
+    None
+}
+
+async fn rpc_call(
+    stdin: &mut ChildStdin,
+    lines: &mut Lines<BufReader<ChildStdout>>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    let req = json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "method": method,
+        "params": params
+    });
+    stdin.write_all(format!("{}\n", req).as_bytes()).await?;
+    stdin.flush().await?;
+
+    timeout(Duration::from_secs(5), async {
+        while let Some(line) = lines.next_line().await? {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let Ok(val) = serde_json::from_str::<Value>(trimmed) else {
+                continue;
+            };
+            if val.get("id").and_then(|v| v.as_u64()) == Some(id) {
+                return Ok(val);
+            }
+        }
+        bail!("server closed stdout before replying to id={}", id)
+    })
+    .await
+    .context("timed out after 5s")?
 }
