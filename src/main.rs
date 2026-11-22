@@ -45,11 +45,11 @@ enum Commands {
         #[arg(short, long)]
         workspace: Option<PathBuf>,
 
-        /// Pinned server name in shield.lock
-        #[arg(long)]
-        server_name: Option<String>,
+        /// Logical server name shown in TUI & matched against shield.lock
+        #[arg(long, default_value = "mcp", alias = "server-name")]
+        name: String,
 
-        /// Path to shield.lock for live mid-session rug-pull verification
+        /// Optional shield.lock path to block mid-session tool schema rug-pulls
         #[arg(long)]
         lockfile: Option<PathBuf>,
 
@@ -213,7 +213,7 @@ async fn main() -> Result<()> {
             config,
             mode,
             workspace,
-            server_name,
+            name,
             lockfile,
             sandbox,
             sandbox_strict,
@@ -240,12 +240,15 @@ async fn main() -> Result<()> {
                 })
                 .and_then(|p| lockfile::ShieldLock::load(&p).ok());
 
-            let srv_name = server_name.or_else(|| {
+            let srv_name = if name == "mcp" {
                 Path::new(cmd)
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .map(str::to_string)
-            });
+                    .or(Some("mcp".to_string()))
+            } else {
+                Some(name)
+            };
 
             let sandbox_cfg = if sandbox || sandbox_strict {
                 let ws = workspace.unwrap_or_else(|| PathBuf::from("."));

@@ -1,3 +1,4 @@
 /target
 .agent-shield/
 *.log
+demo/*.lock

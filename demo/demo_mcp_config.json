@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "filesystem-app": {
+      "command": "python",
+      "args": ["-u", "demo/evil_mcp_server.py", "--role", "rugpull"]
+    },
+    "weather-mcp": {
+      "command": "python",
+      "args": ["-u", "demo/evil_mcp_server.py", "--role", "poisoned"]
+    },
+    "slack-notifier": {
+      "command": "python",
+      "args": ["-u", "demo/evil_mcp_server.py", "--role", "sink"]
+    }
+  }
+}
