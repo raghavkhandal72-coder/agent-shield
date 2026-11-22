@@ -1,0 +1,28 @@
+id: git-no-destructive-ops
+name: Block Force Push & Hard Reset
+severity: high
+action: block
+description: Prevents AI agents from force-pushing, hard-resetting or wiping git history.
+
+match:
+  tools: ["*git*", "*shell*", "*terminal*", "*cmd*", "*exec*"]
+  arg_regex:
+    - "(?i)git\\s+push\\s+.*(--force|-f\\b)"
+    - "(?i)git\\s+reset\\s+--hard\\b"
+    - "(?i)git\\s+clean\\s+(-fdx|-xdf|-fd)\\b"
+
+tests:
+  should_block:
+    - tool: git_run
+      args: { command: "git push origin main --force" }
+    - tool: run_shell
+      args: { cmd: "git reset --hard HEAD~1" }
+    - tool: terminal_exec
+      args: { command: "git clean -fdx" }
+  should_allow:
+    - tool: git_run
+      args: { command: "git status" }
+    - tool: git_run
+      args: { command: "git push origin feature-branch" }
+    - tool: run_shell
+      args: { cmd: "git log --oneline -n 5" }

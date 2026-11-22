@@ -1,7 +1,9 @@
 mod autowrap;
+mod fuzz;
 mod lockfile;
 mod policy;
 mod proxy;
+mod rules;
 mod sandbox;
 mod scan;
 mod scanner;
@@ -52,6 +54,10 @@ enum Commands {
         /// Optional shield.lock path to block mid-session tool schema rug-pulls
         #[arg(long)]
         lockfile: Option<PathBuf>,
+
+        /// Optional directory containing community YAML rule packs (defaults to ./rules if present)
+        #[arg(long)]
+        rules_dir: Option<PathBuf>,
 
         /// Enforce OS-level kernel sandbox (Linux Landlock / macOS Seatbelt / Windows Job Object)
         #[arg(long)]
@@ -166,6 +172,25 @@ enum Commands {
         #[arg(short, long)]
         audit_file: Option<PathBuf>,
     },
+
+    /// Safe policy verification & local MCP boundary QA runner
+    Fuzz {
+        /// Path to directory containing community YAML rule packs
+        #[arg(long, default_value = "rules")]
+        rules: PathBuf,
+
+        /// Optional workspace directory for boundary canary tests
+        #[arg(short, long)]
+        workspace: Option<PathBuf>,
+
+        /// Optional target MCP server command (e.g. --target "python demo/evil_mcp_server.py")
+        #[arg(long)]
+        target: Option<String>,
+
+        /// Target MCP server command and arguments after `--` for schema resilience & boundary QA
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
 }
 
 pub fn write_rich_audit_event(
@@ -215,6 +240,7 @@ async fn main() -> Result<()> {
             workspace,
             name,
             lockfile,
+            rules_dir,
             sandbox,
             sandbox_strict,
             target,
@@ -259,6 +285,17 @@ async fn main() -> Result<()> {
                 None
             };
 
+            let rule_engine = rules_dir
+                .or_else(|| {
+                    let d = PathBuf::from("rules");
+                    if d.is_dir() {
+                        Some(d)
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|p| rules::RuleEngine::load_dir(&p).ok());
+
             eprintln!("[agent-shield] protecting MCP server: {} {:?}", cmd, args);
             proxy::run_proxy(
                 cmd,
@@ -268,6 +305,7 @@ async fn main() -> Result<()> {
                 srv_name,
                 loaded_lock,
                 sandbox_cfg,
+                rule_engine,
             )
             .await?;
         }
@@ -368,6 +406,50 @@ async fn main() -> Result<()> {
 
         Commands::Ui { audit_file } => {
             ui::run_tui(audit_file)?;
+        }
+
+        Commands::Fuzz {
+            rules,
+            workspace,
+            target,
+            cmd,
+        } => {
+            let mut all_ok = true;
+
+            // 1. Rule verification self-tests
+            if rules.exists() {
+                let rules_ok = fuzz::run_rule_tests(&rules)?;
+                if !rules_ok {
+                    all_ok = false;
+                }
+            } else if target.is_none() && cmd.is_empty() {
+                bail!(
+                    "Rules directory '{}' not found. Specify --rules <DIR> or pass a server after `--`",
+                    rules.display()
+                );
+            }
+
+            // 2. Target MCP server schema resilience & boundary QA
+            let target_args: Vec<String> = if !cmd.is_empty() {
+                cmd
+            } else if let Some(t) = target {
+                t.split_whitespace().map(String::from).collect()
+            } else {
+                Vec::new()
+            };
+
+            if !target_args.is_empty() {
+                let c = &target_args[0];
+                let args = &target_args[1..];
+                let server_ok = fuzz::run_server_qa(c, args, workspace.as_deref()).await?;
+                if !server_ok {
+                    all_ok = false;
+                }
+            }
+
+            if !all_ok {
+                std::process::exit(1);
+            }
         }
     }
 

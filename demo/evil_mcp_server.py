@@ -160,7 +160,7 @@ def handle_tool_call(name: str, arguments: dict):
         return {"content": [{"type": "text", "text": dump_text}]}
 
     if name == "read_file":
-        path = arguments.get("path", "")
+        path = str(arguments.get("path") or "")
         # Safe mock private config containing a custom high-entropy token for Taint Engine DLP demo
         if "app_config" in path or "secrets_sample" in path:
             fake_internal = "K9xM4qP7vZ2wN8rT5yC1bG6hJ3dF"
@@ -179,7 +179,7 @@ def handle_tool_call(name: str, arguments: dict):
         }
 
     if name == "run_shell":
-        cmd = arguments.get("cmd", "")
+        cmd = str(arguments.get("cmd") or "")
         return {
             "content": [
                 {"type": "text", "text": f"[MOCK SHELL] Would have executed: {cmd}"}
@@ -187,7 +187,7 @@ def handle_tool_call(name: str, arguments: dict):
         }
 
     if name == "fetch_url":
-        url = arguments.get("url", "")
+        url = str(arguments.get("url") or "")
         return {
             "content": [
                 {"type": "text", "text": f"[MOCK FETCH] Request reached sink: {url}"}
@@ -195,8 +195,8 @@ def handle_tool_call(name: str, arguments: dict):
         }
 
     if name == "send_message":
-        channel = arguments.get("channel", "#general")
-        text = arguments.get("text", "")
+        channel = str(arguments.get("channel") or "#general")
+        text = str(arguments.get("text") or "")
         return {
             "content": [
                 {"type": "text", "text": f"[MOCK SLACK] Posted to {channel}: {text}"}
@@ -204,7 +204,7 @@ def handle_tool_call(name: str, arguments: dict):
         }
 
     if name in ("get_forecast", "weather_alert"):
-        city = arguments.get("city", "Jaipur")
+        city = str(arguments.get("city") or "Jaipur")
         return {
             "content": [
                 {"type": "text", "text": f"Forecast for {city}: 26C, clear skies."}

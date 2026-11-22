@@ -19,6 +19,7 @@ pub async fn run_proxy(
     server_name: Option<String>,
     lockfile: Option<ShieldLock>,
     sandbox_cfg: Option<SandboxConfig>,
+    rule_engine: Option<crate::rules::RuleEngine>,
 ) -> Result<()> {
     // 1. Spawn child process (inside sandbox if configured)
     let (mut child, _sandbox_guard) = if let Some(sb_cfg) = sandbox_cfg {
@@ -62,6 +63,40 @@ pub async fn run_proxy(
                             .and_then(|p| p.get("arguments"))
                             .cloned()
                             .unwrap_or(json!({}));
+
+                        // 0. Community Declarative YAML Rules Check
+                        if let Some(ref re) = rule_engine {
+                            if let Some(verdict) = re.evaluate(tool_name, &tool_args) {
+                                match verdict {
+                                    crate::rules::RuleVerdict::Block { rule_id, name, severity, matched } => {
+                                        let reason = format!(
+                                            "Community rule [{}] '{}' ({}) blocked tool '{}': pattern '{}'",
+                                            rule_id, name, severity, tool_name, matched
+                                        );
+                                        crate::write_rich_audit_event(&server_name_str, tool_name, "outbound", "RULE_BLOCK", &reason, &raw);
+                                        eprintln!("\x1b[1;31m[agent-shield] {}\x1b[0m", reason);
+                                        if let Some(id) = msg.get("id") {
+                                            let err_frame = json!({
+                                                "jsonrpc": "2.0",
+                                                "id": id,
+                                                "error": { "code": -32005, "message": format!("Blocked by agent-shield: {}", reason) }
+                                            });
+                                            client_out.write_all(format!("{}\n", err_frame).as_bytes()).await?;
+                                            client_out.flush().await?;
+                                        }
+                                        continue;
+                                    }
+                                    crate::rules::RuleVerdict::Warn { rule_id, name, severity, matched } => {
+                                        let reason = format!(
+                                            "Community rule [{}] '{}' ({}) matched tool '{}': pattern '{}'",
+                                            rule_id, name, severity, tool_name, matched
+                                        );
+                                        crate::write_rich_audit_event(&server_name_str, tool_name, "outbound", "RULE_WARN", &reason, &raw);
+                                        eprintln!("\x1b[1;33m[agent-shield] RULE WARNING: {}\x1b[0m", reason);
+                                    }
+                                }
+                            }
+                        }
 
                         // 1. Cross-Server Taint & Encoding-Aware DLP Check
                         match taint.check_outbound_call(&server_name_str, tool_name, &tool_args) {

@@ -1,0 +1,28 @@
+id: aws-no-destructive-ops
+name: Block Destructive AWS Resource Deletion
+severity: high
+action: block
+description: Prevents AI agents from forcibly deleting S3 buckets, RDS database instances, or terminating EC2 instances.
+
+match:
+  tools: ["*aws*", "*cloud*", "*shell*", "*terminal*", "*exec*"]
+  arg_regex:
+    - "(?i)aws\\s+s3\\s+rb\\s+.*--force"
+    - "(?i)aws\\s+rds\\s+delete-db-instance"
+    - "(?i)aws\\s+ec2\\s+terminate-instances"
+
+tests:
+  should_block:
+    - tool: aws_cli
+      args: { cmd: "aws s3 rb s3://prod-backups --force" }
+    - tool: run_shell
+      args: { command: "aws rds delete-db-instance --db-instance-identifier prod-db" }
+    - tool: terminal_exec
+      args: { cmd: "aws ec2 terminate-instances --instance-ids i-1234567890abcdef0" }
+  should_allow:
+    - tool: aws_cli
+      args: { cmd: "aws s3 ls" }
+    - tool: aws_cli
+      args: { cmd: "aws ec2 describe-instances" }
+    - tool: run_shell
+      args: { command: "aws rds describe-db-instances" }

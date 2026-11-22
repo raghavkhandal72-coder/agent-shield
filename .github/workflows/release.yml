@@ -27,6 +27,9 @@ jobs:
       - name: Cache Cargo registry & build
         uses: Swatinem/rust-cache@v2
 
+      - name: Verify Community YAML Rules
+        run: cargo run -- fuzz --rules ./rules
+
       - name: Run unit & proxy integration tests
         run: cargo test --locked -- --nocapture
 

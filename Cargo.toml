@@ -22,6 +22,7 @@ similar = "2.6"
 base64 = "0.22"
 ratatui = "0.29"
 crossterm = "0.28"
+serde_yaml = "0.9"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
