@@ -1,0 +1,30 @@
+[global]
+mode = "enforce" # "enforce" or "audit"
+allowed_roots = [] # Optional: e.g. ["C:/projects/my-app"] or ["/workspace"]
+
+[deny]
+tools = []
+paths = [
+  "**/.env*",
+  "**/.ssh/**",
+  "**/.aws/**",
+  "**/.gnupg/**",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/*credentials*",
+  "/etc/shadow",
+  "/etc/passwd"
+]
+commands = [
+  "(?i)\\brm\\s+(-[a-z]*r[a-z]*f|-[a-z]*f[a-z]*r)\\b",
+  "(?i)curl\\s+.*\\|\\s*(ba)?sh",
+  "(?i)wget\\s+.*\\|\\s*(ba)?sh",
+  "(?i)powershell.*-(enc|encodedcommand)\\b",
+  "(?i)\\b(nc|ncat)\\s+.*-e\\b",
+  "(?i)chmod\\s+777\\b"
+]
+
+[scanner]
+block_prompt_injection = true
+redact_secrets_in_response = true
+strip_invisible_unicode = true

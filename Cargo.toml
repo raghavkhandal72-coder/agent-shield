@@ -1,0 +1,25 @@
+[package]
+name = "agent-shield"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-latency local security firewall for MCP servers & AI agents"
+authors = ["Raghav <raghav@maximaengineering.com>"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+regex = "1"
+toml = "0.8"
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+globset = "0.4"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
