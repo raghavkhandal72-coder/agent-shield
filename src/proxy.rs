@@ -4,7 +4,9 @@ use std::process::Stdio;
 use tokio::io::{self, AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
+use crate::lockfile::{LockDrift, ShieldLock};
 use crate::policy::{Decision, PolicyEngine};
+use crate::sandbox::SandboxConfig;
 use crate::scanner::ResponseScanner;
 
 pub async fn run_proxy(
@@ -12,14 +14,23 @@ pub async fn run_proxy(
     args: &[String],
     policy: PolicyEngine,
     scanner: ResponseScanner,
+    server_name: Option<String>,
+    lockfile: Option<ShieldLock>,
+    sandbox_cfg: Option<SandboxConfig>,
 ) -> Result<()> {
-    // 1. Spawn the real MCP Server with piped stdio
-    let mut child = Command::new(cmd)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit()) // Let server errors pass to host stderr safely
-        .spawn()?;
+    // 1. Spawn child process (inside sandbox if configured)
+    let (mut child, _sandbox_guard) = if let Some(sb_cfg) = sandbox_cfg {
+        let (c, g) = crate::sandbox::spawn_sandboxed(cmd, args, &sb_cfg)?;
+        (c, Some(g))
+    } else {
+        let c = Command::new(cmd)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()?;
+        (c, None)
+    };
 
     let mut child_stdin = child.stdin.take().expect("failed to open child stdin");
     let child_stdout = child.stdout.take().expect("failed to open child stdout");
@@ -75,6 +86,40 @@ pub async fn run_proxy(
             line = server_out.next_line() => {
                 let Some(raw) = line? else { break; };
                 if raw.trim().is_empty() { continue; }
+
+                // Live mid-session rug-pull freeze check
+                if let (Some(lock), Some(srv_name)) = (&lockfile, &server_name) {
+                    if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+                        if let Some(tools) = parsed
+                            .get("result")
+                            .and_then(|r| r.get("tools"))
+                            .and_then(|t| t.as_array())
+                        {
+                            let drifts = lock.verify_server(srv_name, tools);
+                            if !drifts.is_empty() {
+                                for d in &drifts {
+                                    if let LockDrift::SchemaMutated { tool, diff, .. } = d {
+                                        eprintln!("\x1b[1;31m[agent-shield] RUG-PULL BLOCKED on '{}::{}':\x1b[0m\n{}", srv_name, tool, diff);
+                                    }
+                                }
+                                crate::write_audit_event("inbound", "RUG_PULL_BLOCKED", srv_name);
+                                if let Some(id) = parsed.get("id") {
+                                    let err_frame = json!({
+                                        "jsonrpc": "2.0",
+                                        "id": id,
+                                        "error": {
+                                            "code": -32002,
+                                            "message": format!("Blocked by agent-shield: tool schema rug-pull detected on '{}'. Run `agent-shield scan` to inspect diff.", srv_name)
+                                        }
+                                    });
+                                    client_out.write_all(format!("{}\n", err_frame).as_bytes()).await?;
+                                    client_out.flush().await?;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
 
                 let outcome = scanner.sanitize_response(&raw);
                 if !outcome.findings.is_empty() {

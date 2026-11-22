@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "evil-demo": {
+      "command": "python",
+      "args": ["-u", "demo/evil_mcp_server.py"]
+    }
+  }
+}

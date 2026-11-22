@@ -237,7 +237,7 @@ fn default_shield_bin() -> String {
         .unwrap_or_else(|| "agent-shield".to_string())
 }
 
-fn detect_config_path(client: ClientTarget) -> Result<PathBuf> {
+pub fn detect_config_path(client: ClientTarget) -> Result<PathBuf> {
     let home = home_dir().context("Could not determine home directory")?;
 
     match client {

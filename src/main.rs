@@ -1,6 +1,9 @@
 mod autowrap;
+mod lockfile;
 mod policy;
 mod proxy;
+mod sandbox;
+mod scan;
 mod scanner;
 
 use anyhow::{bail, Context, Result};
@@ -11,7 +14,7 @@ use scanner::ResponseScanner;
 use serde_json::json;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(
@@ -39,6 +42,22 @@ enum Commands {
         /// Restrict filesystem access strictly inside this workspace directory
         #[arg(short, long)]
         workspace: Option<PathBuf>,
+
+        /// Pinned server name in shield.lock
+        #[arg(long)]
+        server_name: Option<String>,
+
+        /// Path to shield.lock for live mid-session rug-pull verification
+        #[arg(long)]
+        lockfile: Option<PathBuf>,
+
+        /// Enforce OS-level kernel sandbox (Linux Landlock / macOS Seatbelt / Windows Job Object)
+        #[arg(long)]
+        sandbox: bool,
+
+        /// Fail closed if kernel sandbox cannot be fully enforced
+        #[arg(long)]
+        sandbox_strict: bool,
 
         /// Target MCP server command and arguments after `--`
         #[arg(last = true, required = true)]
@@ -108,6 +127,36 @@ enum Commands {
         #[arg(long)]
         unwrap: bool,
     },
+
+    /// Audit all configured MCP servers for tool poisoning, shadowing, rug-pulls & Lethal Trifecta
+    Scan {
+        #[arg(long, value_enum, default_value_t = autowrap::ClientTarget::Claude)]
+        client: autowrap::ClientTarget,
+
+        /// Custom path to MCP config JSON
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+
+        /// Path to shield.lock for rug-pull verification
+        #[arg(long, default_value = "shield.lock")]
+        lockfile: PathBuf,
+
+        /// Output machine-readable JSON (useful for CI/CD gates)
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Cryptographically pin all MCP tool schemas (SHA-256) into shield.lock
+    Lock {
+        #[arg(long, value_enum, default_value_t = autowrap::ClientTarget::Claude)]
+        client: autowrap::ClientTarget,
+
+        #[arg(short, long)]
+        file: Option<PathBuf>,
+
+        #[arg(short, long, default_value = "shield.lock")]
+        out: PathBuf,
+    },
 }
 
 pub fn write_audit_event(direction: &str, action: &str, detail: &str) {
@@ -137,20 +186,60 @@ async fn main() -> Result<()> {
             config,
             mode,
             workspace,
+            server_name,
+            lockfile,
+            sandbox,
+            sandbox_strict,
             target,
         } => {
             if target.is_empty() {
                 bail!("No MCP server command provided after `--`");
             }
             let cfg = ShieldConfig::load(config.as_deref())?;
-            let policy_engine = PolicyEngine::new(&cfg, mode, workspace)?;
+            let policy_engine = PolicyEngine::new(&cfg, mode, workspace.clone())?;
             let response_scanner = ResponseScanner::new(cfg.scanner)?;
 
             let cmd = &target[0];
             let args = &target[1..];
 
+            let loaded_lock = lockfile
+                .or_else(|| {
+                    let default_lock = PathBuf::from("shield.lock");
+                    if default_lock.exists() {
+                        Some(default_lock)
+                    } else {
+                        None
+                    }
+                })
+                .and_then(|p| lockfile::ShieldLock::load(&p).ok());
+
+            let srv_name = server_name.or_else(|| {
+                Path::new(cmd)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .map(str::to_string)
+            });
+
+            let sandbox_cfg = if sandbox || sandbox_strict {
+                let ws = workspace.unwrap_or_else(|| PathBuf::from("."));
+                let mut sc = sandbox::SandboxConfig::new(ws);
+                sc.strict = sandbox_strict;
+                Some(sc)
+            } else {
+                None
+            };
+
             eprintln!("[agent-shield] protecting MCP server: {} {:?}", cmd, args);
-            proxy::run_proxy(cmd, args, policy_engine, response_scanner).await?;
+            proxy::run_proxy(
+                cmd,
+                args,
+                policy_engine,
+                response_scanner,
+                srv_name,
+                loaded_lock,
+                sandbox_cfg,
+            )
+            .await?;
         }
 
         Commands::Init { out } => {
@@ -232,6 +321,19 @@ async fn main() -> Result<()> {
                 dry_run,
                 unwrap,
             })?;
+        }
+
+        Commands::Scan {
+            client,
+            file,
+            lockfile,
+            json,
+        } => {
+            scan::run_scan_command(client, file, lockfile, json).await?;
+        }
+
+        Commands::Lock { client, file, out } => {
+            scan::run_lock_command(client, file, out).await?;
         }
     }
 

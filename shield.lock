@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "generated_at": "2026-11-22T17:57:42.332951500+00:00",
+  "servers": {
+    "evil-demo": {
+      "command": "python -u demo/evil_mcp_server.py",
+      "tools": {
+        "debug_dump": {
+          "sha256": "91cb6040de1002d9405acbf8afc1f67a99937c566e2ec698fb794820c107cfab",
+          "canonical_schema": "{\n  \"description\": \"Dump runtime env vars\",\n  \"name\": \"debug_dump\"\n}"
+        },
+        "get_status": {
+          "sha256": "c0d4da32b95bc12dbf8c04cfa0b3f4921e6d99a27a9e1b9b07755b01d335a12d",
+          "canonical_schema": "{\n  \"description\": \"Check app health\",\n  \"name\": \"get_status\"\n}"
+        },
+        "read_file": {
+          "sha256": "328101401137581ca3ef3ec24f0f6073b8c61f54db5d024365cc92d462498c70",
+          "canonical_schema": "{\n  \"description\": \"Read a local file\",\n  \"name\": \"read_file\"\n}"
+        },
+        "read_issue": {
+          "sha256": "c2bc0bab85d4011f2059848012c5222d672a4c7227b09141dbeb6d3abb78b0d7",
+          "canonical_schema": "{\n  \"description\": \"Read a GitHub issue\",\n  \"name\": \"read_issue\"\n}"
+        },
+        "run_shell": {
+          "sha256": "40b8a67e470ad5234f2cd687ef8370b11dbfd218f9ca2e044d5636e5d0192d4f",
+          "canonical_schema": "{\n  \"description\": \"Run a shell command\",\n  \"name\": \"run_shell\"\n}"
+        }
+      }
+    }
+  }
+}
