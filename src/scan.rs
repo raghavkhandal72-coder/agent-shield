@@ -244,7 +244,11 @@ pub async fn run_scan_command(
         print_scorecard(&report);
     }
 
-    if report.findings.iter().any(|f| f.severity == Severity::Critical) {
+    if report
+        .findings
+        .iter()
+        .any(|f| f.severity == Severity::Critical)
+    {
         std::process::exit(2);
     }
 
@@ -259,7 +263,10 @@ fn run_tool_poisoning_checks(probed: &[ProbedServer], findings: &mut Vec<Finding
 
     for ps in probed {
         for tool in &ps.tools {
-            let tool_name = tool.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let tool_name = tool
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
 
             // Collect ALL strings from description + nested inputSchema descriptions
             let mut texts = Vec::new();
@@ -298,7 +305,10 @@ fn run_tool_poisoning_checks(probed: &[ProbedServer], findings: &mut Vec<Finding
                     category: "TOOL_POISONING".into(),
                     server: ps.spec.name.clone(),
                     tool: Some(tool_name.to_string()),
-                    message: format!("Covert agent coercion directive in metadata: \"{}\"", m.as_str()),
+                    message: format!(
+                        "Covert agent coercion directive in metadata: \"{}\"",
+                        m.as_str()
+                    ),
                     diff: None,
                 });
             }
@@ -366,8 +376,14 @@ fn run_shadowing_checks(probed: &[ProbedServer], findings: &mut Vec<Finding>) ->
 
     for ps in probed {
         for tool in &ps.tools {
-            let cur_tool = tool.get("name").and_then(|v| v.as_str()).unwrap_or("unknown");
-            let desc = tool.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            let cur_tool = tool
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let desc = tool
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if !hijack_verb_re.is_match(desc) {
                 continue;
             }
@@ -422,9 +438,21 @@ fn run_lethal_trifecta_check(probed: &[ProbedServer], findings: &mut Vec<Finding
             if has_any(
                 &text,
                 &[
-                    "read_file", "filesystem", "directory", "sql", "postgres", "sqlite",
-                    "database", "query", "env", "secret", "keychain", "credential",
-                    "local file", "ssh", "private",
+                    "read_file",
+                    "filesystem",
+                    "directory",
+                    "sql",
+                    "postgres",
+                    "sqlite",
+                    "database",
+                    "query",
+                    "env",
+                    "secret",
+                    "keychain",
+                    "credential",
+                    "local file",
+                    "ssh",
+                    "private",
                 ],
             ) {
                 buckets.private_data.insert(ps.spec.name.clone());
@@ -433,9 +461,22 @@ fn run_lethal_trifecta_check(probed: &[ProbedServer], findings: &mut Vec<Finding
             if has_any(
                 &text,
                 &[
-                    "fetch", "scrape", "browse", "browser", "search_web", "web_search",
-                    "url", "github", "issue", "pull_request", "email", "inbox", "slack",
-                    "discord", "rss", "webpage",
+                    "fetch",
+                    "scrape",
+                    "browse",
+                    "browser",
+                    "search_web",
+                    "web_search",
+                    "url",
+                    "github",
+                    "issue",
+                    "pull_request",
+                    "email",
+                    "inbox",
+                    "slack",
+                    "discord",
+                    "rss",
+                    "webpage",
                 ],
             ) {
                 buckets.untrusted_input.insert(ps.spec.name.clone());
@@ -444,9 +485,20 @@ fn run_lethal_trifecta_check(probed: &[ProbedServer], findings: &mut Vec<Finding
             if has_any(
                 &text,
                 &[
-                    "send_email", "send_message", "post_", "webhook", "upload", "curl",
-                    "http_post", "bash", "shell", "exec", "run_command", "terminal",
-                    "git_push", "create_comment",
+                    "send_email",
+                    "send_message",
+                    "post_",
+                    "webhook",
+                    "upload",
+                    "curl",
+                    "http_post",
+                    "bash",
+                    "shell",
+                    "exec",
+                    "run_command",
+                    "terminal",
+                    "git_push",
+                    "create_comment",
                 ],
             ) {
                 buckets.external_comms.insert(ps.spec.name.clone());
@@ -507,9 +559,21 @@ fn print_scorecard(report: &ScanReport) {
         _ => "\x1b[1;31m",
     };
 
-    let crit = report.findings.iter().filter(|f| f.severity == Severity::Critical).count();
-    let high = report.findings.iter().filter(|f| f.severity == Severity::High).count();
-    let med = report.findings.iter().filter(|f| f.severity == Severity::Medium).count();
+    let crit = report
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Critical)
+        .count();
+    let high = report
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::High)
+        .count();
+    let med = report
+        .findings
+        .iter()
+        .filter(|f| f.severity == Severity::Medium)
+        .count();
 
     println!("\n======================================================================");
     println!(
@@ -523,12 +587,18 @@ fn print_scorecard(report: &ScanReport) {
     println!("======================================================================");
 
     if report.findings.is_empty() {
-        println!("  \x1b[32mPASS\x1b[0m No poisoning, shadowing, rug-pull, or trifecta risks detected.");
+        println!(
+            "  \x1b[32mPASS\x1b[0m No poisoning, shadowing, rug-pull, or trifecta risks detected."
+        );
         return;
     }
 
     for (idx, f) in report.findings.iter().enumerate() {
-        let prefix = if idx + 1 == report.findings.len() { "└──" } else { "├──" };
+        let prefix = if idx + 1 == report.findings.len() {
+            "└──"
+        } else {
+            "├──"
+        };
         let sev_badge = match f.severity {
             Severity::Critical => "\x1b[1;31m[CRITICAL]\x1b[0m",
             Severity::High => "\x1b[1;33m[HIGH]    \x1b[0m",
@@ -539,7 +609,10 @@ fn print_scorecard(report: &ScanReport) {
             Some(t) => format!("{}::{}", f.server, t),
             None => f.server.clone(),
         };
-        println!("{} {} ({}) {}: {}", prefix, sev_badge, f.category, target, f.message);
+        println!(
+            "{} {} ({}) {}: {}",
+            prefix, sev_badge, f.category, target, f.message
+        );
         if let Some(diff) = &f.diff {
             print!("{}", diff);
         }
@@ -576,7 +649,9 @@ async fn probe_server_tools(spec: &ServerSpec) -> Result<Vec<Value>> {
                 "clientInfo": { "name": "agent-shield-scan", "version": "0.2.0" }
             }
         });
-        stdin.write_all(format!("{}\n", init_req).as_bytes()).await?;
+        stdin
+            .write_all(format!("{}\n", init_req).as_bytes())
+            .await?;
         stdin.flush().await?;
         let _ = read_jsonrpc_by_id(&mut reader, 1).await?;
 
@@ -587,7 +662,9 @@ async fn probe_server_tools(spec: &ServerSpec) -> Result<Vec<Value>> {
 
         // 3. tools/list
         let list_req = json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} });
-        stdin.write_all(format!("{}\n", list_req).as_bytes()).await?;
+        stdin
+            .write_all(format!("{}\n", list_req).as_bytes())
+            .await?;
         stdin.flush().await?;
 
         let resp = read_jsonrpc_by_id(&mut reader, 2).await?;
@@ -634,7 +711,10 @@ fn resolve_mcp_config(client: ClientTarget, file_override: Option<PathBuf>) -> R
         None => detect_config_path(client)?,
     };
     if !path.exists() {
-        bail!("MCP config not found at {}. Pass --file <path>.", path.display());
+        bail!(
+            "MCP config not found at {}. Pass --file <path>.",
+            path.display()
+        );
     }
     Ok(path)
 }
@@ -649,11 +729,17 @@ fn load_server_specs(path: &Path) -> Result<Vec<ServerSpec>> {
     let mut specs = Vec::new();
     for (name, val) in servers {
         let Some(obj) = val.as_object() else { continue };
-        let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) else { continue };
+        let Some(cmd) = obj.get("command").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let args: Vec<String> = obj
             .get("args")
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
 
         // Unwrap in-memory if already wrapped by agent-shield

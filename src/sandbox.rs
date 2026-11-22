@@ -59,13 +59,13 @@ impl Drop for SandboxGuard {
 }
 
 /// Spawns an MCP server process inside the strongest OS-native sandbox available.
+#[allow(clippy::needless_return)]
 pub fn spawn_sandboxed(
     cmd: &str,
     args: &[String],
     cfg: &SandboxConfig,
 ) -> Result<(Child, SandboxGuard)> {
-    let workspace = std::fs::canonicalize(&cfg.workspace)
-        .unwrap_or_else(|_| cfg.workspace.clone());
+    let workspace = std::fs::canonicalize(&cfg.workspace).unwrap_or_else(|_| cfg.workspace.clone());
 
     #[cfg(target_os = "linux")]
     {
@@ -129,10 +129,7 @@ fn resolve_executable_runtime_dir(cmd: &str) -> Option<PathBuf> {
 
 #[cfg(unix)]
 fn create_sandbox_tmp(workspace: &Path) -> Option<PathBuf> {
-    let base = std::env::temp_dir().join(format!(
-        "agent-shield-sandbox-{}",
-        std::process::id()
-    ));
+    let base = std::env::temp_dir().join(format!("agent-shield-sandbox-{}", std::process::id()));
     let _ = workspace;
     std::fs::create_dir_all(&base).ok()?;
     Some(base)
@@ -233,7 +230,12 @@ mod linux {
             workspace.display()
         );
 
-        Ok((child, SandboxGuard { temp_dir: sandbox_tmp }))
+        Ok((
+            child,
+            SandboxGuard {
+                temp_dir: sandbox_tmp,
+            },
+        ))
     }
 
     fn apply_landlock_rules(
@@ -345,7 +347,12 @@ mod macos {
             workspace.display()
         );
 
-        Ok((child, SandboxGuard { temp_dir: sandbox_tmp }))
+        Ok((
+            child,
+            SandboxGuard {
+                temp_dir: sandbox_tmp,
+            },
+        ))
     }
 
     fn escape_sbpl(p: &Path) -> String {
@@ -410,9 +417,9 @@ mod windows {
         JOBOBJECT_BASIC_UI_RESTRICTIONS, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
         JOB_OBJECT_LIMIT_ACTIVE_PROCESS, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOB_OBJECT_UILIMIT_DESKTOP,
-        JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS,
-        JOB_OBJECT_UILIMIT_HANDLES, JOB_OBJECT_UILIMIT_READCLIPBOARD,
-        JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS, JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
+        JOB_OBJECT_UILIMIT_EXITWINDOWS, JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
+        JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
+        JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
     };
     use windows_sys::Win32::System::Threading::{
         OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
@@ -427,7 +434,10 @@ mod windows {
         // 1. Create anonymous Windows Job Object with strict resource & breakout limits
         let job: HANDLE = unsafe { CreateJobObjectW(null(), null()) };
         if job.is_null() {
-            anyhow::bail!("CreateJobObjectW failed: {}", std::io::Error::last_os_error());
+            anyhow::bail!(
+                "CreateJobObjectW failed: {}",
+                std::io::Error::last_os_error()
+            );
         }
 
         if let Err(e) = configure_job_limits(job, cfg) {
@@ -455,7 +465,11 @@ mod windows {
         if proc_handle.is_null() {
             let _ = child.start_kill();
             unsafe { CloseHandle(job) };
-            anyhow::bail!("OpenProcess(pid={}) failed: {}", pid, std::io::Error::last_os_error());
+            anyhow::bail!(
+                "OpenProcess(pid={}) failed: {}",
+                pid,
+                std::io::Error::last_os_error()
+            );
         }
 
         let assigned = unsafe { AssignProcessToJobObject(job, proc_handle) };

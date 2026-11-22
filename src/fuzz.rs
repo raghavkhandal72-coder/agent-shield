@@ -42,7 +42,10 @@ pub async fn run_fuzz(
         println!("\x1b[32mResult: {} passed, 0 failed\x1b[0m", passed);
         Ok(())
     } else {
-        println!("\x1b[31mResult: {} passed, {} failed\x1b[0m", passed, failed);
+        println!(
+            "\x1b[31mResult: {} passed, {} failed\x1b[0m",
+            passed, failed
+        );
         std::process::exit(2);
     }
 }
@@ -66,7 +69,10 @@ fn run_rule_pack_tests(dir: &Path) -> Result<(usize, usize)> {
         let pack = match RuleEngine::load_pack_file(&path) {
             Ok(p) => p,
             Err(err) => {
-                println!("\x1b[31m[FAIL]\x1b[0m Rule Pack: {} (parse error: {})", file_name, err);
+                println!(
+                    "\x1b[31m[FAIL]\x1b[0m Rule Pack: {} (parse error: {})",
+                    file_name, err
+                );
                 failed += 1;
                 continue;
             }
@@ -79,7 +85,10 @@ fn run_rule_pack_tests(dir: &Path) -> Result<(usize, usize)> {
         let engine = match RuleEngine::from_packs(vec![pack]) {
             Ok(e) => e,
             Err(err) => {
-                println!("\x1b[31m[FAIL]\x1b[0m Rule Pack: {} (compile error: {})", file_name, err);
+                println!(
+                    "\x1b[31m[FAIL]\x1b[0m Rule Pack: {} (compile error: {})",
+                    file_name, err
+                );
                 failed += 1;
                 continue;
             }

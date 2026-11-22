@@ -337,7 +337,11 @@ fn summarize_drifts(drifts: &[LockDrift]) -> (String, String) {
     }
 
     let summary = parts.join(", ");
-    let payload = if diffs.is_empty() { summary.clone() } else { diffs };
+    let payload = if diffs.is_empty() {
+        summary.clone()
+    } else {
+        diffs
+    };
     (summary, payload)
 }
 

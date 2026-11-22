@@ -7,9 +7,10 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
+    #[default]
     Enforce,
     Audit,
 }
@@ -23,13 +24,7 @@ impl std::fmt::Display for Mode {
     }
 }
 
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Enforce
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct ShieldConfig {
     #[serde(default)]
     pub global: GlobalConfig,
@@ -72,16 +67,6 @@ impl Default for DenyConfig {
             paths: default_deny_paths(),
             commands: default_deny_commands(),
             tools: Vec::new(),
-        }
-    }
-}
-
-impl Default for ShieldConfig {
-    fn default() -> Self {
-        Self {
-            global: GlobalConfig::default(),
-            deny: DenyConfig::default(),
-            scanner: crate::scanner::ScannerConfig::default(),
         }
     }
 }
@@ -161,8 +146,8 @@ impl PolicyEngine {
 
         let mut deny_commands = Vec::new();
         for pat in &cfg.deny.commands {
-            let re = Regex::new(pat)
-                .with_context(|| format!("Invalid deny command regex: {}", pat))?;
+            let re =
+                Regex::new(pat).with_context(|| format!("Invalid deny command regex: {}", pat))?;
             deny_commands.push((pat.clone(), re));
         }
 
@@ -253,7 +238,9 @@ impl PolicyEngine {
 
             // Check raw form first (catches relative ".env" or "sub/.env.local")
             if self.deny_paths.is_match(&raw_slash)
-                || self.deny_paths.is_match(format!("/{}", raw_slash.trim_start_matches('/')))
+                || self
+                    .deny_paths
+                    .is_match(format!("/{}", raw_slash.trim_start_matches('/')))
             {
                 return Some(format!("blocked sensitive path '{}'", raw));
             }

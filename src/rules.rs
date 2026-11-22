@@ -6,32 +6,22 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleAction {
+    #[default]
     Block,
     Warn,
 }
 
-impl Default for RuleAction {
-    fn default() -> Self {
-        Self::Block
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum RuleSeverity {
     Critical,
     High,
+    #[default]
     Medium,
     Low,
-}
-
-impl Default for RuleSeverity {
-    fn default() -> Self {
-        Self::Medium
-    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -162,7 +152,9 @@ impl RuleEngine {
                     let g = GlobBuilder::new(pat)
                         .case_insensitive(true)
                         .build()
-                        .with_context(|| format!("Invalid tool glob '{}' in rule '{}'", pat, pack.id))?;
+                        .with_context(|| {
+                            format!("Invalid tool glob '{}' in rule '{}'", pat, pack.id)
+                        })?;
                     gb.add(g);
                 }
                 Some(gb.build()?)

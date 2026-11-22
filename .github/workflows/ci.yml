@@ -1,14 +1,18 @@
-name: CI
+name: CI & Rule Pack Verification
 
 on:
   push:
-    branches: [ main ]
+    branches: ["main"]
   pull_request:
-    branches: [ main ]
+    branches: ["main"]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  verify:
-    name: Verify Rules & Run Tests
+  # Fast gate: verifies formatting, clippy, unit/integration tests, and ALL community YAML rule packs
+  test-and-rules:
+    name: Test & Verify YAML Rule Packs
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -16,12 +20,48 @@ jobs:
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
-      - name: Cache Cargo registry & build
+      - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: Verify Community YAML Rules
-        run: cargo run -- fuzz --rules ./rules
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: Run Test Suite
+      - name: Run Clippy lints
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Run unit, DLP taint & proxy integration tests
         run: cargo test --locked -- --nocapture
+
+      - name: Verify all community YAML rule packs (should_block & should_allow assertions)
+        run: cargo run --locked -- fuzz --rules ./rules
+
+  # Cross-platform compile check so Linux Landlock / macOS Seatbelt / Windows Job Object stay green
+  cross-platform-check:
+    name: Build Check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: check-${{ matrix.os }}
+
+      - name: Compile check across platform cfg gates
+        run: cargo check --locked --all-targets
+
+      - name: Run cross-platform taint & rule self-tests
+        run: |
+          cargo test --locked taint::tests
+          cargo run --locked -- fuzz --rules ./rules

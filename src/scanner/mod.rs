@@ -43,28 +43,45 @@ impl ResponseScanner {
     pub fn new(cfg: ScannerConfig) -> Result<Self> {
         let secret_rules = vec![
             ("AWS_ACCESS_KEY", Regex::new(r"\bAKIA[0-9A-Z]{16}\b")?),
-            ("GITHUB_TOKEN", Regex::new(r"\bgh[pousr]_[A-Za-z0-9_]{36,}\b")?),
-            ("OPENAI_OR_ANTHROPIC_KEY", Regex::new(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b")?),
-            ("SLACK_TOKEN", Regex::new(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")?),
+            (
+                "GITHUB_TOKEN",
+                Regex::new(r"\bgh[pousr]_[A-Za-z0-9_]{36,}\b")?,
+            ),
+            (
+                "OPENAI_OR_ANTHROPIC_KEY",
+                Regex::new(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b")?,
+            ),
+            (
+                "SLACK_TOKEN",
+                Regex::new(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")?,
+            ),
             ("GOOGLE_API_KEY", Regex::new(r"\bAIza[0-9A-Za-z\-_]{35}\b")?),
             (
                 "PRIVATE_KEY_BLOCK",
-                Regex::new(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")?,
+                Regex::new(
+                    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----",
+                )?,
             ),
             (
                 "GENERIC_SECRET_ASSIGN",
-                Regex::new(r#"(?i)\b(api_key|secret_key|db_password|auth_token)\s*[:=]\s*['"]?[A-Za-z0-9_\-/+=]{12,}['"]?"#)?,
+                Regex::new(
+                    r#"(?i)\b(api_key|secret_key|db_password|auth_token)\s*[:=]\s*['"]?[A-Za-z0-9_\-/+=]{12,}['"]?"#,
+                )?,
             ),
         ];
 
         let injection_rules = vec![
             (
                 "INSTRUCTION_OVERRIDE",
-                Regex::new(r"(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)")?,
+                Regex::new(
+                    r"(?i)(ignore|disregard|forget)\s+(all\s+)?(previous|prior|above)\s+(instructions|prompts|rules)",
+                )?,
             ),
             (
                 "ROLE_HIJACK",
-                Regex::new(r"(?i)(you are now|act as|switch to)\s+(in\s+)?(developer mode|unrestricted|jailbreak|system admin)")?,
+                Regex::new(
+                    r"(?i)(you are now|act as|switch to)\s+(in\s+)?(developer mode|unrestricted|jailbreak|system admin)",
+                )?,
             ),
             (
                 "SYSTEM_TAG_SPOOF",
@@ -72,11 +89,15 @@ impl ResponseScanner {
             ),
             (
                 "EXFILTRATION_DIRECTIVE",
-                Regex::new(r"(?i)(read|dump|exfiltrate|steal)\s+.*(\.env|\.ssh|id_rsa|api[_\s]?key|credentials).*(send|post|upload|curl|webhook)")?,
+                Regex::new(
+                    r"(?i)(read|dump|exfiltrate|steal)\s+.*(\.env|\.ssh|id_rsa|api[_\s]?key|credentials).*(send|post|upload|curl|webhook)",
+                )?,
             ),
             (
                 "SILENT_TOOL_COERCION",
-                Regex::new(r"(?i)(do not tell the user|hide this from the user|silently execute|without informing the user)")?,
+                Regex::new(
+                    r"(?i)(do not tell the user|hide this from the user|silently execute|without informing the user)",
+                )?,
             ),
         ];
 
@@ -147,7 +168,10 @@ impl ResponseScanner {
                         }
                     }
                     if !matched_rules.is_empty() {
-                        findings.push(format!("prompt injection blocked: {}", matched_rules.join(", ")));
+                        findings.push(format!(
+                            "prompt injection blocked: {}",
+                            matched_rules.join(", ")
+                        ));
                         current = format!(
                             "[BLOCKED BY AGENT-SHIELD: Suspected prompt injection ({}). Payload quarantined before reaching LLM.]",
                             matched_rules.join(", ")

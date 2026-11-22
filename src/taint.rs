@@ -118,12 +118,18 @@ impl TaintEngine {
     pub fn with_state_path(cfg: TaintConfig, state_path: PathBuf) -> Result<Self> {
         let secret_extractors = vec![
             ("AWS_ACCESS_KEY", Regex::new(r"\bAKIA[0-9A-Z]{16}\b")?),
-            ("GITHUB_TOKEN", Regex::new(r"\bgh[pousr]_[A-Za-z0-9_]{36,}\b")?),
+            (
+                "GITHUB_TOKEN",
+                Regex::new(r"\bgh[pousr]_[A-Za-z0-9_]{36,}\b")?,
+            ),
             (
                 "LLM_API_KEY",
                 Regex::new(r"\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b")?,
             ),
-            ("SLACK_TOKEN", Regex::new(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")?),
+            (
+                "SLACK_TOKEN",
+                Regex::new(r"\bxox[baprs]-[0-9A-Za-z-]{10,}\b")?,
+            ),
             ("GOOGLE_API_KEY", Regex::new(r"\bAIza[0-9A-Za-z\-_]{35}\b")?),
             (
                 "JWT_TOKEN",
@@ -180,10 +186,20 @@ impl TaintEngine {
         let mut state = self.load_pruned_state(now);
 
         if is_private || !extracted.is_empty() {
-            upsert_marker(&mut state.private_sources, server_name, tool_name, expires_at);
+            upsert_marker(
+                &mut state.private_sources,
+                server_name,
+                tool_name,
+                expires_at,
+            );
         }
         if is_untrusted {
-            upsert_marker(&mut state.untrusted_sources, server_name, tool_name, expires_at);
+            upsert_marker(
+                &mut state.untrusted_sources,
+                server_name,
+                tool_name,
+                expires_at,
+            );
         }
 
         let mut added = 0usize;
@@ -243,7 +259,8 @@ impl TaintEngine {
         }
 
         let combined_args = arg_strings.join(" ");
-        let is_sink = is_external_comms_tool(tool_name) || self.url_or_net_re.is_match(&combined_args);
+        let is_sink =
+            is_external_comms_tool(tool_name) || self.url_or_net_re.is_match(&combined_args);
         if !is_sink {
             return TaintVerdict::Allow;
         }
@@ -420,7 +437,11 @@ impl TaintEngine {
         out
     }
 
-    fn extract_sensitive_tokens(&self, text: &str, include_high_entropy: bool) -> Vec<(String, String)> {
+    fn extract_sensitive_tokens(
+        &self,
+        text: &str,
+        include_high_entropy: bool,
+    ) -> Vec<(String, String)> {
         let mut found = Vec::new();
         let mut seen = BTreeSet::new();
 
@@ -445,10 +466,11 @@ impl TaintEngine {
                 if tok.len() < 16 || tok.starts_with("http") || tok.contains("://") {
                     continue;
                 }
-                if has_mixed_classes(tok) && shannon_entropy(tok) >= 3.6 {
-                    if seen.insert(tok.to_string()) {
-                        found.push(("HIGH_ENTROPY_SECRET".to_string(), tok.to_string()));
-                    }
+                if has_mixed_classes(tok)
+                    && shannon_entropy(tok) >= 3.6
+                    && seen.insert(tok.to_string())
+                {
+                    found.push(("HIGH_ENTROPY_SECRET".to_string(), tok.to_string()));
                 }
             }
         }
@@ -472,7 +494,9 @@ impl TaintEngine {
             fs::create_dir_all(parent)?;
         }
         let payload = serde_json::to_string(state)?;
-        let tmp_path = self.state_path.with_extension(format!("tmp.{}", std::process::id()));
+        let tmp_path = self
+            .state_path
+            .with_extension(format!("tmp.{}", std::process::id()));
         fs::write(&tmp_path, &payload)
             .with_context(|| format!("failed writing temp taint state {}", tmp_path.display()))?;
 
@@ -654,11 +678,33 @@ fn upsert_marker(list: &mut Vec<SessionMarker>, server: &str, tool: &str, expire
 fn is_private_data_tool(tool_name: &str, args_lower: &str) -> bool {
     let t = tool_name.to_ascii_lowercase();
     let private_tools = [
-        "read_file", "read_multiple_files", "get_file", "cat", "query", "sql", "select",
-        "postgres", "sqlite", "mysql", "mongo", "secret", "keychain", "env", "debug_dump",
-        "list_secrets", "read_secret",
+        "read_file",
+        "read_multiple_files",
+        "get_file",
+        "cat",
+        "query",
+        "sql",
+        "select",
+        "postgres",
+        "sqlite",
+        "mysql",
+        "mongo",
+        "secret",
+        "keychain",
+        "env",
+        "debug_dump",
+        "list_secrets",
+        "read_secret",
     ];
-    let private_arg_hints = [".env", "secret", "credential", "token", "password", "id_rsa", ".aws"];
+    let private_arg_hints = [
+        ".env",
+        "secret",
+        "credential",
+        "token",
+        "password",
+        "id_rsa",
+        ".aws",
+    ];
     private_tools.iter().any(|k| t.contains(k))
         || private_arg_hints.iter().any(|k| args_lower.contains(k))
 }
@@ -666,19 +712,50 @@ fn is_private_data_tool(tool_name: &str, args_lower: &str) -> bool {
 fn is_untrusted_input_tool(tool_name: &str, args_lower: &str) -> bool {
     let t = tool_name.to_ascii_lowercase();
     let untrusted = [
-        "fetch", "scrape", "browse", "search_web", "web_search", "read_issue", "get_issue",
-        "pull_request", "read_email", "get_email", "inbox", "read_message", "slack", "discord",
-        "rss", "webpage", "http_get",
+        "fetch",
+        "scrape",
+        "browse",
+        "search_web",
+        "web_search",
+        "read_issue",
+        "get_issue",
+        "pull_request",
+        "read_email",
+        "get_email",
+        "inbox",
+        "read_message",
+        "slack",
+        "discord",
+        "rss",
+        "webpage",
+        "http_get",
     ];
-    untrusted.iter().any(|k| t.contains(k)) || args_lower.contains("http://") || args_lower.contains("https://")
+    untrusted.iter().any(|k| t.contains(k))
+        || args_lower.contains("http://")
+        || args_lower.contains("https://")
 }
 
 fn is_external_comms_tool(tool_name: &str) -> bool {
     let t = tool_name.to_ascii_lowercase();
     let sinks = [
-        "fetch", "http_", "post_", "send_email", "send_message", "slack", "discord", "webhook",
-        "upload", "curl", "wget", "create_comment", "create_issue", "git_push", "run_shell",
-        "exec", "bash", "terminal",
+        "fetch",
+        "http_",
+        "post_",
+        "send_email",
+        "send_message",
+        "slack",
+        "discord",
+        "webhook",
+        "upload",
+        "curl",
+        "wget",
+        "create_comment",
+        "create_issue",
+        "git_push",
+        "run_shell",
+        "exec",
+        "bash",
+        "terminal",
     ];
     sinks.iter().any(|k| t.contains(k))
 }
@@ -702,7 +779,8 @@ mod tests {
         let _ = fs::remove_file(&state_file);
 
         // Process A (filesystem MCP server) reads a sensitive token
-        let server_a = TaintEngine::with_state_path(TaintConfig::default(), state_file.clone()).unwrap();
+        let server_a =
+            TaintEngine::with_state_path(TaintConfig::default(), state_file.clone()).unwrap();
         let fake_key = concat!("sk-proj-", "9xKp2LmN8qRv4TzW7yBc1DfG");
         let resp = json!({
             "jsonrpc": "2.0",
@@ -711,7 +789,12 @@ mod tests {
         })
         .to_string();
 
-        let count = server_a.ingest_response("filesystem", "read_file", &json!({"path": "config.txt"}), &resp);
+        let count = server_a.ingest_response(
+            "filesystem",
+            "read_file",
+            &json!({"path": "config.txt"}),
+            &resp,
+        );
         assert!(count > 0);
 
         // Verify ZERO plaintext secret exists anywhere on disk
@@ -719,7 +802,8 @@ mod tests {
         assert!(!disk_contents.contains(fake_key));
 
         // Process B (completely separate fetch/slack MCP server) tries 4 obfuscated exfiltrations
-        let server_b = TaintEngine::with_state_path(TaintConfig::default(), state_file.clone()).unwrap();
+        let server_b =
+            TaintEngine::with_state_path(TaintConfig::default(), state_file.clone()).unwrap();
 
         // 1. Shifted Base64 inside URL query string
         let b64_payload = STANDARD_NO_PAD.encode(format!("data={}", fake_key));
@@ -756,7 +840,9 @@ mod tests {
             "send_message",
             &json!({ "text": format!("id={}", rev) }),
         );
-        assert!(matches!(v4, TaintVerdict::BlockDlp { ref encoding, .. } if encoding == "reversed"));
+        assert!(
+            matches!(v4, TaintVerdict::BlockDlp { ref encoding, .. } if encoding == "reversed")
+        );
 
         // 5. Clean outbound call without secret is allowed
         let v5 = server_b.check_outbound_call(
@@ -785,9 +871,19 @@ mod tests {
         let slack_server = TaintEngine::with_state_path(cfg, state_file.clone()).unwrap();
 
         // Leg 1: Private data read
-        fs_server.ingest_response("filesystem", "read_file", &json!({"path": "notes.txt"}), r#"{"result":"ok"}"#);
+        fs_server.ingest_response(
+            "filesystem",
+            "read_file",
+            &json!({"path": "notes.txt"}),
+            r#"{"result":"ok"}"#,
+        );
         // Leg 2: Untrusted external content read
-        gh_server.ingest_response("github", "read_issue", &json!({"issue": 42}), r#"{"result":"issue body"}"#);
+        gh_server.ingest_response(
+            "github",
+            "read_issue",
+            &json!({"issue": 42}),
+            r#"{"result":"issue body"}"#,
+        );
         // Leg 3: External communication attempt -> blocked!
         let verdict = slack_server.check_outbound_call(
             "slack",

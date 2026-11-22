@@ -197,7 +197,9 @@ pub fn write_rich_audit_event(
     detail: &str,
     payload: &str,
 ) {
-    let Some(home) = policy::home_dir() else { return };
+    let Some(home) = policy::home_dir() else {
+        return;
+    };
     let dir = home.join(".agent-shield");
     let _ = fs::create_dir_all(&dir);
     let log_path = dir.join("audit.jsonl");
@@ -253,7 +255,11 @@ async fn main() -> Result<()> {
             let rule_engine = match rules_dir.as_deref() {
                 Some(dir) => {
                     let loaded = RuleEngine::load_dir(dir)?;
-                    eprintln!("[agent-shield] loaded {} YAML rule pack(s) from {}", loaded.len(), dir.display());
+                    eprintln!(
+                        "[agent-shield] loaded {} YAML rule pack(s) from {}",
+                        loaded.len(),
+                        dir.display()
+                    );
                     loaded
                 }
                 None => {
@@ -278,7 +284,8 @@ async fn main() -> Result<()> {
             let sandbox_cfg = if use_sandbox {
                 let ws = match workspace {
                     Some(w) => w,
-                    None => std::env::current_dir().context("could not resolve current directory for sandbox")?,
+                    None => std::env::current_dir()
+                        .context("could not resolve current directory for sandbox")?,
                 };
                 let mut sb = SandboxConfig::new(ws);
                 sb.strict = sandbox_strict;
@@ -304,7 +311,12 @@ async fn main() -> Result<()> {
                 sandbox: sandbox_cfg,
             };
 
-            eprintln!("[agent-shield] protecting '{}': {} {:?}", ctx.server_name, target[0], &target[1..]);
+            eprintln!(
+                "[agent-shield] protecting '{}': {} {:?}",
+                ctx.server_name,
+                target[0],
+                &target[1..]
+            );
             proxy::run_proxy(&target[0], &target[1..], ctx).await?;
         }
 
@@ -358,11 +370,15 @@ async fn main() -> Result<()> {
             }
 
             match rule_engine.evaluate(&tool, &parsed_args) {
-                RuleDecision::Block { rule_id, rule_name, .. } => {
+                RuleDecision::Block {
+                    rule_id, rule_name, ..
+                } => {
                     println!("BLOCKED (rule {}): {}", rule_id, rule_name);
                     std::process::exit(2);
                 }
-                RuleDecision::Warn { rule_id, rule_name, .. } => {
+                RuleDecision::Warn {
+                    rule_id, rule_name, ..
+                } => {
                     println!("WARN (rule {}): {}", rule_id, rule_name);
                 }
                 RuleDecision::Allow => println!("ALLOW"),

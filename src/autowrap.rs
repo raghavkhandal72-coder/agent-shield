@@ -7,8 +7,9 @@ use std::path::{Path, PathBuf};
 
 use crate::policy::{home_dir, Mode};
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum, Default)]
 pub enum ClientTarget {
+    #[default]
     Claude,
     Cursor,
 }
@@ -19,12 +20,6 @@ impl std::fmt::Display for ClientTarget {
             ClientTarget::Claude => write!(f, "claude"),
             ClientTarget::Cursor => write!(f, "cursor"),
         }
-    }
-}
-
-impl Default for ClientTarget {
-    fn default() -> Self {
-        ClientTarget::Claude
     }
 }
 
@@ -81,7 +76,13 @@ pub fn run_auto_wrap(opts: AutoWrapOptions) -> Result<()> {
                 skipped += 1;
             }
         } else {
-            match wrap_entry(obj, &shield_bin, &opts.mode, opts.config.as_deref(), opts.workspace.as_deref()) {
+            match wrap_entry(
+                obj,
+                &shield_bin,
+                &opts.mode,
+                opts.config.as_deref(),
+                opts.workspace.as_deref(),
+            ) {
                 WrapResult::Wrapped => {
                     println!("[WRAPPED] {}", name);
                     changed += 1;
@@ -91,7 +92,10 @@ pub fn run_auto_wrap(opts: AutoWrapOptions) -> Result<()> {
                     skipped += 1;
                 }
                 WrapResult::NotStdio => {
-                    println!("[SKIP] {} (no stdio `command` field — likely HTTP/SSE)", name);
+                    println!(
+                        "[SKIP] {} (no stdio `command` field — likely HTTP/SSE)",
+                        name
+                    );
                     skipped += 1;
                 }
             }
@@ -138,7 +142,11 @@ fn wrap_entry(
     policy_config: Option<&Path>,
     workspace: Option<&Path>,
 ) -> WrapResult {
-    let Some(orig_cmd) = obj.get("command").and_then(|v| v.as_str()).map(str::to_string) else {
+    let Some(orig_cmd) = obj
+        .get("command")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+    else {
         return WrapResult::NotStdio;
     };
 

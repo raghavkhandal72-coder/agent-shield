@@ -372,12 +372,17 @@ pub fn run_tui(audit_override: Option<PathBuf>) -> Result<()> {
                     KeyCode::Char('f') => {
                         app.filter = app.filter.next();
                         let len = app.filtered_indices().len();
-                        app.table_state.select(if len > 0 { Some(len - 1) } else { None });
+                        app.table_state
+                            .select(if len > 0 { Some(len - 1) } else { None });
                         app.inspector_scroll = 0;
                     }
                     KeyCode::Char('p') | KeyCode::Char(' ') => {
                         app.paused = !app.paused;
-                        app.flash(if app.paused { "Stream PAUSED" } else { "Stream LIVE" });
+                        app.flash(if app.paused {
+                            "Stream PAUSED"
+                        } else {
+                            "Stream LIVE"
+                        });
                     }
                     KeyCode::Char('c') => app.clear_buffer(),
                     KeyCode::Char('x') => app.clear_taint_bus(),
@@ -424,9 +429,21 @@ fn draw_ui(f: &mut Frame, app: &mut AppState) {
 fn draw_header(f: &mut Frame, area: Rect, app: &AppState) {
     let est_cost = (app.total_tokens as f64 / 1_000_000.0) * COST_PER_MILLION_TOKENS_USD;
     let status_span = if app.paused {
-        Span::styled(" PAUSED ", Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD))
+        Span::styled(
+            " PAUSED ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
     } else {
-        Span::styled(" LIVE ", Style::default().fg(Color::Black).bg(Color::Green).add_modifier(Modifier::BOLD))
+        Span::styled(
+            " LIVE ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )
     };
 
     let blocked_style = if app.total_blocked > 0 {
@@ -436,16 +453,32 @@ fn draw_header(f: &mut Frame, area: Rect, app: &AppState) {
     };
 
     let line = Line::from(vec![
-        Span::styled(" AGENT-SHIELD ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " AGENT-SHIELD ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         status_span,
         Span::raw("  Filter: "),
-        Span::styled(app.filter.label(), Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            app.filter.label(),
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  |  Events: "),
-        Span::styled(app.events.len().to_string(), Style::default().fg(Color::White)),
+        Span::styled(
+            app.events.len().to_string(),
+            Style::default().fg(Color::White),
+        ),
         Span::raw("  |  Blocked: "),
         Span::styled(app.total_blocked.to_string(), blocked_style),
         Span::raw("  |  Tokens: "),
-        Span::styled(format!("~{}", format_num(app.total_tokens)), Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!("~{}", format_num(app.total_tokens)),
+            Style::default().fg(Color::Yellow),
+        ),
         Span::raw(format!(" (${:.4})", est_cost)),
     ]);
 
@@ -460,7 +493,11 @@ fn draw_header(f: &mut Frame, area: Rect, app: &AppState) {
 fn draw_traffic_table(f: &mut Frame, area: Rect, app: &mut AppState) {
     let indices = app.filtered_indices();
     let header = Row::new(["Time", "Server", "Dir", "Action", "Tool", "Tok", "Summary"])
-        .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        .style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
         .bottom_margin(0);
 
     let rows: Vec<Row> = indices
@@ -468,7 +505,11 @@ fn draw_traffic_table(f: &mut Frame, area: Rect, app: &mut AppState) {
         .map(|&idx| {
             let ev = &app.events[idx];
             let ts = short_time(&ev.ts);
-            let dir = if ev.direction.starts_with("out") { "OUT" } else { "IN " };
+            let dir = if ev.direction.starts_with("out") {
+                "OUT"
+            } else {
+                "IN "
+            };
             let badge_style = action_style(&ev.action);
             let summary: String = ev.detail.chars().take(48).collect();
 
@@ -494,10 +535,7 @@ fn draw_traffic_table(f: &mut Frame, area: Rect, app: &mut AppState) {
         Constraint::Min(16),
     ];
 
-    let title = format!(
-        " Live MCP Traffic ({} shown) ",
-        indices.len()
-    );
+    let title = format!(" Live MCP Traffic ({} shown) ", indices.len());
     let table = Table::new(rows, widths)
         .header(header)
         .block(
@@ -549,18 +587,27 @@ fn draw_taint_radar(f: &mut Frame, area: Rect, app: &AppState) {
             Span::raw("Status   : "),
             Span::styled(
                 " LETHAL TRIFECTA ARMED ",
-                Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Red)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])
     } else if anchors > 0 {
         Line::from(vec![
             Span::raw("Status   : "),
-            Span::styled(" TAINTED (DLP WATCHING) ", Style::default().fg(Color::Black).bg(Color::Yellow)),
+            Span::styled(
+                " TAINTED (DLP WATCHING) ",
+                Style::default().fg(Color::Black).bg(Color::Yellow),
+            ),
         ])
     } else {
         Line::from(vec![
             Span::raw("Status   : "),
-            Span::styled(" CLEAN ", Style::default().fg(Color::Black).bg(Color::Green)),
+            Span::styled(
+                " CLEAN ",
+                Style::default().fg(Color::Black).bg(Color::Green),
+            ),
         ])
     };
 
@@ -587,31 +634,48 @@ fn draw_taint_radar(f: &mut Frame, area: Rect, app: &AppState) {
         ]),
         Line::from(vec![
             Span::styled("Anchors  : ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("{} SHA-256 hashes", anchors), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{} SHA-256 hashes", anchors),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
         Line::from(vec![
             Span::styled("Types    : ", Style::default().fg(Color::Gray)),
-            Span::raw(if top_labels.is_empty() { "-" } else { &top_labels }),
+            Span::raw(if top_labels.is_empty() {
+                "-"
+            } else {
+                &top_labels
+            }),
         ]),
     ];
 
-    let border_color = if trifecta_armed { Color::Red } else { Color::DarkGray };
+    let border_color = if trifecta_armed {
+        Color::Red
+    } else {
+        Color::DarkGray
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .title(" Cross-Server Taint Radar ");
 
-    f.render_widget(Paragraph::new(lines).block(block).wrap(Wrap { trim: true }), area);
+    f.render_widget(
+        Paragraph::new(lines).block(block).wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 fn draw_token_meter(f: &mut Frame, area: Rect, app: &AppState) {
     let mut ranked: Vec<(&String, &ServerStats)> = app.server_stats.iter().collect();
-    ranked.sort_by(|a, b| b.1.tokens.cmp(&a.1.tokens));
+    ranked.sort_by_key(|a| std::cmp::Reverse(a.1.tokens));
 
     let max_tok = ranked.first().map(|(_, s)| s.tokens).unwrap_or(1).max(1);
 
-    let header = Row::new(["Server", "Reqs", "Blk", "Tokens", "Burn"])
-        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
+    let header = Row::new(["Server", "Reqs", "Blk", "Tokens", "Burn"]).style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
 
     let rows: Vec<Row> = ranked
         .into_iter()
@@ -660,7 +724,10 @@ fn draw_inspector(f: &mut Frame, area: Rect, app: &AppState) {
             Span::styled(ev.action.clone(), action_style(&ev.action)),
             Span::raw("   "),
             Span::styled("Target: ", Style::default().fg(Color::Gray)),
-            Span::styled(format!("{}::{}", ev.server, ev.tool), Style::default().fg(Color::LightBlue)),
+            Span::styled(
+                format!("{}::{}", ev.server, ev.tool),
+                Style::default().fg(Color::LightBlue),
+            ),
             Span::raw("   "),
             Span::styled("Timestamp: ", Style::default().fg(Color::Gray)),
             Span::raw(ev.ts.clone()),
@@ -737,11 +804,16 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &AppState) {
 fn action_style(action: &str) -> Style {
     let act = action.to_ascii_uppercase();
     if act.contains("RUG_PULL") || act.contains("DLP") || act.contains("TRIFECTA_BLOCK") {
-        Style::default().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD)
     } else if act.contains("BLOCK") {
         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     } else if act.contains("SANITIZ") || act.contains("WARN") || act.contains("AUDIT") {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else if act == "ALLOW" {
         Style::default().fg(Color::Green)
     } else {
